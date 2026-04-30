@@ -1,4 +1,4 @@
-package snake
+package game
 
 import k2 "../libs/karl2d/"
 
@@ -21,6 +21,7 @@ tick_timer: f32 = TICK_RATE
 move_direction: Vec2i
 game_over: bool
 food_pos: Vec2i
+font: k2.Font
 
 food_sprite: k2.Texture
 head_sprite: k2.Texture
@@ -31,7 +32,17 @@ food_eaten_at: time.Time
 started_at: time.Time
 prev_time: time.Time
 
+Game_Memory :: struct {
+    some_number: int,
+    run:         bool,
+    debug_draw:  bool,
+}
+
+@(private = "file")
+g: ^Game_Memory
+
 place_food :: proc() {
+    fmt.println("game.odin::place_food")
     occupied: [GRID_WIDTH][GRID_WIDTH]bool
 
     for i in 0 ..< snake_length {
@@ -52,10 +63,10 @@ place_food :: proc() {
         random_cell_index := rand.int31_max(i32(len(free_cells)))
         food_pos = free_cells[random_cell_index]
     }
-
 }
 
 restart :: proc() {
+    fmt.println("game.odin::restart")
     start_head_pos := Vec2i{GRID_WIDTH / 2, GRID_WIDTH / 2}
     snake[0] = start_head_pos
     snake[1] = start_head_pos - {0, 1}
@@ -66,16 +77,19 @@ restart :: proc() {
     place_food()
 }
 
-main :: proc() {
-    init()
-    for step() {}
-    shutdown()
+init_window :: proc() {
+    fmt.println("game.odin::init_window")
+    k2.init(WINDOW_SIZE, WINDOW_SIZE, "Snake")
 }
 
-font: k2.Font
-
-init :: proc() {
-    k2.init(WINDOW_SIZE, WINDOW_SIZE, "Snake")
+init_game :: proc() {
+    fmt.println("game.odin::init_game")
+    g = new(Game_Memory)
+    g^ = Game_Memory {
+        run         = true,
+        debug_draw  = false,
+        some_number = 100,
+    }
 
     prev_time = time.now()
 
@@ -88,9 +102,14 @@ init :: proc() {
 
     food_eaten_at = time.now()
     started_at = time.now()
+
+    game_hot_reloaded(g)
+    fmt.println("game.odin::init_game::end")
 }
 
-step :: proc() -> bool {
+@(export)
+step_game :: proc() -> bool {
+    // fmt.println("game.odin::step_game")
     if !k2.update() {
         return false
     }
@@ -207,14 +226,101 @@ step :: proc() -> bool {
     k2.present()
 
     free_all(context.temp_allocator)
+
     return true
 }
 
 shutdown :: proc() {
+    fmt.println("game.odin::shutdown")
+    shutdown_game()
+    shutdown_window()
+}
+
+shutdown_game :: proc() {
+    fmt.println("game.odin::shutdown_game")
     k2.destroy_texture(head_sprite)
     k2.destroy_texture(food_sprite)
     k2.destroy_texture(body_sprite)
     k2.destroy_texture(tail_sprite)
 
+    free(g)
+}
+
+shutdown_window :: proc() {
+    fmt.println("game.odin::shutdown_window")
     k2.shutdown()
+}
+
+@(export)
+game_init_window :: proc() {
+    fmt.println("game.odin::game_init_window")
+    init_window()
+}
+
+@(export)
+game_init_game :: proc() {
+    fmt.println("game.odin::game_init_game")
+    init_game()
+}
+
+@(export)
+game_update :: proc() {
+    // fmt.println("game.odin::game_update")
+    step_game()
+}
+
+@(export)
+game_should_run :: proc() -> bool {
+    // fmt.println("game.odin::game_should_run")
+    // when ODIN_OS != .JS {
+    //     return false
+    // }
+
+    return g.run
+}
+
+@(export)
+game_shutdown :: proc() {
+    fmt.println("game.odin::game_shutdown")
+    shutdown_game()
+}
+
+@(export)
+game_shutdown_window :: proc() {
+    fmt.println("game.odin::game_shutdown_window")
+    shutdown_window()
+}
+
+@(export)
+game_memory :: proc() -> rawptr {
+    fmt.println("game.odin::game_memory")
+    return g
+}
+
+@(export)
+game_memory_size :: proc() -> int {
+    fmt.println("game.odin::game_memory_size")
+    return size_of(Game_Memory)
+}
+
+@(export)
+game_hot_reloaded :: proc(mem: rawptr) {
+    fmt.println("game.odin::game_hot_reloaded")
+    g = (^Game_Memory)(mem)
+
+    restart()
+    // Here you can also set your own global variables. A good idea is to make
+    // your global variables into pointers that point to something inside `g`.
+}
+
+@(export)
+game_force_reload :: proc() -> bool {
+    // fmt.println("game.odin::game_force_reload")
+    return k2.key_went_down(.F5)
+}
+
+@(export)
+game_force_restart :: proc() -> bool {
+    // fmt.println("game.odin::game_force_restart")
+    return k2.key_went_down(.F6)
 }

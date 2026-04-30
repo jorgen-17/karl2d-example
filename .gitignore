@@ -1,6 +1,5 @@
 bin/**
 build/**
-*/bin/**
-*/build/**
 *.bin
+*.exe
 karl2d-example
