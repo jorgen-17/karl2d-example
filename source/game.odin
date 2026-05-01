@@ -38,6 +38,7 @@ Game_Memory :: struct {
     prev_time:      time.Time,
     some_number:    int,
     run:            bool,
+    pause:          bool,
     debug_draw:     bool,
 }
 
@@ -77,6 +78,7 @@ restart :: proc() {
     g.snake_length = START_SNAKE_LENGTH
     g.move_direction = {0, 1}
     g.game_over = false
+    g.pause = false
     place_food()
 }
 
@@ -142,6 +144,14 @@ game_update :: proc() -> bool {
         g.move_direction = {1, 0}
     }
 
+    if k2.key_is_held(.Escape) && !g.game_over {
+        g.pause = !g.pause
+    }
+
+    if k2.key_is_held(.Q) {
+        shutdown()
+    }
+
     dt := k2.get_frame_time()
 
     if g.game_over {
@@ -152,6 +162,18 @@ game_update :: proc() -> bool {
         g.tick_timer -= dt
     }
 
+    if !g.pause {
+        update_state()
+    }
+
+    draw()
+
+    free_all(context.temp_allocator)
+
+    return true
+}
+
+update_state :: proc() {
     if g.tick_timer <= 0 {
         next_part_pos := g.snake[0]
         g.snake[0] += g.move_direction
@@ -184,8 +206,10 @@ game_update :: proc() -> bool {
 
         g.tick_timer = TICK_RATE + g.tick_timer
     }
+}
 
-    k2.clear({76, 53, 83, 255})
+draw :: proc() {
+    k2.clear({76, 53, 183, 255})
 
     camera := k2.Camera {
         zoom = k2.get_window_scale() * (f32(WINDOW_SIZE) / CANVAS_SIZE),
@@ -231,14 +255,20 @@ game_update :: proc() -> bool {
         k2.draw_text("Press Enter to play again", {4, 30}, 15, k2.BLACK)
     }
 
+    if g.pause {
+        k2.draw_text("Pause", {50, 50}, 25, k2.BLACK)
+    }
+
     score := g.snake_length - START_SNAKE_LENGTH
     score_str := fmt.tprintf("Score: %v", score)
     k2.draw_text(score_str, {4, CANVAS_SIZE - 14}, 10, k2.RL_GRAY)
+
     k2.present()
+}
 
-    free_all(context.temp_allocator)
-
-    return true
+shutdown :: proc() {
+    game_destroy_state()
+    game_shutdown()
 }
 
 @(export)
