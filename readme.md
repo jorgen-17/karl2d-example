@@ -1,3 +1,8 @@
+pull down karl2s submodule:
+```bash
+git submodule update --init --recursive
+```
+
 hot reload:
 ```bash
 ./build_hot_reload.sh
