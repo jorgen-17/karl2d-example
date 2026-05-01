@@ -3,17 +3,18 @@ Development game exe. Loads build/hot_reload/game.dll and reloads it whenever it
 changes.
 */
 
-package main
+package karl2d_hot_reload_main
 
+import "base:runtime"
 import "core:c/libc"
 import "core:dynlib"
 import "core:fmt"
 import "core:log"
 import "core:mem"
 import "core:os"
-import "core:path/filepath"
 import "core:time"
 
+DLL_DIR :: "build/hot_reload/"
 when ODIN_OS == .Windows {
     DLL_EXT :: ".dll"
 } else when ODIN_OS == .Darwin {
@@ -21,21 +22,20 @@ when ODIN_OS == .Windows {
 } else {
     DLL_EXT :: ".so"
 }
+DLL_PATH :: DLL_DIR + "game" + DLL_EXT
 
-GAME_DLL_DIR :: "build/hot_reload/"
-GAME_DLL_PATH :: GAME_DLL_DIR + "game" + DLL_EXT
-
-// We copy the DLL because using it directly would lock it, which would prevent
-// the compiler from writing to it.
 copy_dll :: proc(to: string) -> bool {
-    copy_err := os.copy_file(to, GAME_DLL_PATH)
-
-    if copy_err != nil {
-        fmt.printfln(
-            "Failed to copy " + GAME_DLL_PATH + " to {0}: %v",
-            to,
-            copy_err,
+    exit: i32
+    when ODIN_OS == .Windows {
+        exit = libc.system(
+            fmt.ctprintf("copy build\\hot_reload\\game.dll {0}", to),
         )
+    } else {
+        exit = libc.system(fmt.ctprintf("cp " + DLL_PATH + " {0}", to))
+    }
+
+    if exit != 0 {
+        log.errorf("Failed to copy game" + DLL_EXT + " to {0}", to)
         return false
     }
 
@@ -44,45 +44,58 @@ copy_dll :: proc(to: string) -> bool {
 
 Game_API :: struct {
     lib:               dynlib.Library,
-    init_window:       proc(),
-    init_game:         proc(),
-    update:            proc(),
-    should_run:        proc() -> bool,
-    shutdown_game:     proc(),
-    shutdown_window:   proc(),
+    startup:           proc(
+        allocator: runtime.Allocator,
+    ) -> (
+        k2_state: rawptr
+    ),
+    shutdown:          proc(),
+    init_state:        proc(k2_state: rawptr, allocator: runtime.Allocator),
+    destroy_state:     proc(),
+    update:            proc() -> bool,
     memory:            proc() -> rawptr,
     memory_size:       proc() -> int,
-    hot_reloaded:      proc(mem: rawptr),
-    force_reload:      proc() -> bool,
+    hot_reloaded:      proc(mem: rawptr, k2_state: rawptr),
     force_restart:     proc() -> bool,
     modification_time: time.Time,
     api_version:       int,
 }
 
 load_game_api :: proc(api_version: int) -> (api: Game_API, ok: bool) {
-    mod_time, mod_time_error := os.last_write_time_by_name(GAME_DLL_PATH)
+    mod_time, mod_time_error := os.last_write_time_by_name(DLL_PATH)
     if mod_time_error != os.ERROR_NONE {
-        fmt.printfln(
-            "Failed getting last write time of " +
-            GAME_DLL_PATH +
+        log.errorf(
+            "Failed getting last write time of game" +
+            DLL_EXT +
             ", error code: {1}",
             mod_time_error,
         )
         return
     }
 
+    exit := libc.system(fmt.ctprintf("pwd"))
+
+    if exit != 0 {
+        log.errorf("Failed to pwd")
+    }
+
+    // NOTE: this needs to be a relative path for Linux to work.
     game_dll_name := fmt.tprintf(
-        GAME_DLL_DIR + "game_{0}" + DLL_EXT,
+        "{0}{1}game_{2}" + DLL_EXT,
+        "./" when ODIN_OS != .Windows else "",
+        DLL_DIR,
         api_version,
     )
+    fmt.println("hot_reload::load_game_api game_dll_name:{0}", game_dll_name)
     copy_dll(game_dll_name) or_return
 
-    // This proc matches the names of the fields in Game_API to symbols in the
-    // game DLL. It actually looks for symbols starting with `game_`, which is
-    // why the argument `"game_"` is there.
     _, ok = dynlib.initialize_symbols(&api, game_dll_name, "game_", "lib")
     if !ok {
-        fmt.printfln("Failed initializing symbols: {0}", dynlib.last_error())
+        log.panicf(
+            "Failed initializing symbols: {0}. API struct: %v",
+            dynlib.last_error(),
+            api,
+        )
     }
 
     api.api_version = api_version
@@ -95,29 +108,20 @@ load_game_api :: proc(api_version: int) -> (api: Game_API, ok: bool) {
 unload_game_api :: proc(api: ^Game_API) {
     if api.lib != nil {
         if !dynlib.unload_library(api.lib) {
-            fmt.printfln("Failed unloading lib: {0}", dynlib.last_error())
+            log.errorf("Failed unloading lib: {0}", dynlib.last_error())
         }
     }
 
-    if os.remove(
-           fmt.tprintf(GAME_DLL_DIR + "game_{0}" + DLL_EXT, api.api_version),
-       ) !=
-       nil {
-        fmt.printfln(
-            "Failed to remove {0}game_{1}" + DLL_EXT + " copy",
-            GAME_DLL_DIR,
+    if os.remove(fmt.tprintf("game_{0}" + DLL_EXT, api.api_version)) != nil {
+        log.errorf(
+            "Failed to remove game_{0}" + DLL_EXT + " copy",
             api.api_version,
         )
     }
 }
 
-main :: proc() {
-    fmt.println("hot_reload::main")
-    // Set working dir to dir of executable.
-    exe_path := os.args[0]
-    exe_dir := filepath.dir(string(exe_path), context.temp_allocator)
-    os.set_working_directory(exe_dir)
 
+main :: proc() {
     context.logger = log.create_console_logger()
 
     default_allocator := context.allocator
@@ -125,124 +129,89 @@ main :: proc() {
     mem.tracking_allocator_init(&tracking_allocator, default_allocator)
     context.allocator = mem.tracking_allocator(&tracking_allocator)
 
-    reset_tracking_allocator :: proc(a: ^mem.Tracking_Allocator) -> bool {
+    reset_tracking_allocator :: proc(
+        a: ^mem.Tracking_Allocator,
+    ) -> (
+        []mem.Tracking_Allocator_Entry,
+        bool,
+    ) {
         err := false
+        leaks := make(
+            [dynamic]mem.Tracking_Allocator_Entry,
+            context.temp_allocator,
+        )
 
         for _, value in a.allocation_map {
-            log.errorf("%v: Leaked %v bytes\n", value.location, value.size)
+            append(&leaks, value)
             err = true
         }
 
         mem.tracking_allocator_clear(a)
-        return err
+        return leaks[:], err
     }
 
     game_api_version := 0
     game_api, game_api_ok := load_game_api(game_api_version)
 
     if !game_api_ok {
-        fmt.println("Failed to load Game API")
+        log.error("Failed to load Game API")
         return
     }
 
     game_api_version += 1
-    game_api.init_window()
-    game_api.init_game()
+    k2_state := game_api.startup(context.allocator)
+    game_api.init_state(k2_state, context.allocator)
 
     old_game_apis := make([dynamic]Game_API, default_allocator)
 
-    for game_api.should_run() {
-        has_hot_reloaded := false
-        if has_hot_reloaded {
-            has_hot_reloaded = false
-            fmt.println("hot_reload::has_hot_reloaded_back_to_top")
+    window_open := true
+    for window_open {
+        if game_api.force_restart() {
+            game_api.destroy_state()
+            game_api.init_state(k2_state, context.allocator)
         }
-        game_api.update()
-        force_reload := game_api.force_reload()
-        force_restart := game_api.force_restart()
-        reload := force_reload || force_restart
-        game_dll_mod, game_dll_mod_err := os.last_write_time_by_name(
-            GAME_DLL_PATH,
-        )
 
-        if game_dll_mod_err == os.ERROR_NONE &&
-           game_api.modification_time != game_dll_mod {
-            reload = true
-        }
+        window_open = game_api.update()
+
+        game_dll_mod, game_dll_mod_err := os.last_write_time_by_name(DLL_PATH)
+        reload :=
+            game_dll_mod_err == os.ERROR_NONE &&
+            game_api.modification_time != game_dll_mod
 
         if reload {
             new_game_api, new_game_api_ok := load_game_api(game_api_version)
 
             if new_game_api_ok {
-                force_restart =
-                    force_restart ||
-                    game_api.memory_size() != new_game_api.memory_size()
+                append(&old_game_apis, game_api)
 
-                if !force_restart {
-                    fmt.println("hot_reload::!force_restart")
-                    // This does the normal hot reload
-
-                    // Note that we don't unload the old game APIs because that
-                    // would unload the DLL. The DLL can contain stored info
-                    // such as string literals. The old DLLs are only unloaded
-                    // on a full reset or on shutdown.
-                    append(&old_game_apis, game_api)
+                if game_api.memory_size() != new_game_api.memory_size() {
+                    game_api.destroy_state()
+                    game_api = new_game_api
+                    game_api.init_state(k2_state, context.allocator)
+                } else {
                     game_memory := game_api.memory()
                     game_api = new_game_api
-                    game_api.hot_reloaded(game_memory)
-                    has_hot_reloaded = true
-                    fmt.println("hot_reload::post_hot_reloaded")
-                } else {
-                    fmt.println("hot_reload::force_restart")
-                    // This does a full reset. That's basically like opening and
-                    // closing the game, without having to restart the executable.
-                    //
-                    // You end up in here if the game requests a full reset OR
-                    // if the size of the game memory has changed. That would
-                    // probably lead to a crash anyways.
-
-                    game_api.shutdown_game()
-                    reset_tracking_allocator(&tracking_allocator)
-
-                    for &g in old_game_apis {
-                        unload_game_api(&g)
-                    }
-
-                    clear(&old_game_apis)
-                    unload_game_api(&game_api)
-                    game_api = new_game_api
-                    game_api.init_game()
+                    game_api.hot_reloaded(game_memory, k2_state)
                 }
 
                 game_api_version += 1
             }
         }
 
-        if len(tracking_allocator.bad_free_array) > 0 {
-            fmt.println("hot_reload::bad_free_detected")
-            for b in tracking_allocator.bad_free_array {
-                log.errorf("Bad free at: %v", b.location)
-            }
-
-            // This prevents the game from closing without you seeing the bad
-            // frees. This is mostly needed because I use Sublime Text and my game's
-            // console isn't hooked up into Sublime's console properly.
-            libc.getchar()
-            panic("Bad free detected")
-        }
-
-        if has_hot_reloaded {
-            fmt.println("hot_reload::has_hot_reloaded_bottom_of_loop")
-        }
+        free_all(context.temp_allocator)
     }
 
     free_all(context.temp_allocator)
-    game_api.shutdown_game()
-    if reset_tracking_allocator(&tracking_allocator) {
-        // This prevents the game from closing without you seeing the memory
-        // leaks. This is mostly needed because I use Sublime Text and my game's
-        // console isn't hooked up into Sublime's console properly.
-        libc.getchar()
+    game_api.destroy_state()
+    game_api.shutdown()
+
+    if leaks, has_leaks := reset_tracking_allocator(&tracking_allocator);
+       has_leaks {
+        for l in leaks {
+            fmt.eprintfln("%v: Leaked %v bytes", l.location, l.size)
+        }
+
+        panic("Memory leaks detected!")
     }
 
     for &g in old_game_apis {
@@ -251,12 +220,11 @@ main :: proc() {
 
     delete(old_game_apis)
 
-    game_api.shutdown_window()
     unload_game_api(&game_api)
     mem.tracking_allocator_destroy(&tracking_allocator)
 }
 
-// Make game use good GPU on laptops.
+// make game use good GPU on laptops etc
 
 @(export)
 NvOptimusEnablement: u32 = 1

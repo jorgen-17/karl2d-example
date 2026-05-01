@@ -1,7 +1,10 @@
+#+vet explicit-allocators
+
 package game
 
 import k2 "../libs/karl2d/"
 
+import "base:runtime"
 import "core:fmt"
 import "core:math"
 import "core:math/rand"
@@ -17,6 +20,7 @@ MAX_SNAKE_LENGTH :: GRID_WIDTH * GRID_WIDTH
 START_SNAKE_LENGTH :: 3
 
 Game_Memory :: struct {
+    allocator:      runtime.Allocator,
     start_head_pos: Vec2i,
     snake:          [MAX_SNAKE_LENGTH]Vec2i,
     snake_length:   int,
@@ -76,49 +80,47 @@ restart :: proc() {
     place_food()
 }
 
-init_window :: proc() {
-    fmt.println("game.odin::init_window")
-    k2.init(WINDOW_SIZE, WINDOW_SIZE, "Snake")
+@(export)
+game_startup :: proc(allocator: runtime.Allocator) -> (k2_state: rawptr) {
+    fmt.println("game.odin::game_startup")
+    return k2.init(
+        WINDOW_SIZE,
+        WINDOW_SIZE,
+        "Snake",
+        allocator = allocator,
+        options = {window_mode = .Windowed_Resizable},
+    )
 }
 
-init_game :: proc() {
+@(export)
+game_init_state :: proc(k2_state: rawptr, allocator: runtime.Allocator) {
     fmt.println("game.odin::init_game")
-    g = new(Game_Memory)
-    g^ = Game_Memory {
-        snake_length   = START_SNAKE_LENGTH,
-        snake          = [MAX_SNAKE_LENGTH]Vec2i{},
-        tick_timer     = TICK_RATE,
-        move_direction = {0, 1},
-        food_sprite    = k2.load_texture_from_bytes(
-            #load("../assets/food.png"),
-        ),
-        head_sprite    = k2.load_texture_from_bytes(
-            #load("../assets/head.png"),
-        ),
-        body_sprite    = k2.load_texture_from_bytes(
-            #load("../assets/body.png"),
-        ),
-        tail_sprite    = k2.load_texture_from_bytes(
-            #load("../assets/tail.png"),
-        ),
-        food_eaten_at  = time.now(),
-        started_at     = time.now(),
-        prev_time      = time.now(),
-        game_over      = false,
-        run            = true,
-        debug_draw     = false,
-        some_number    = 100,
-    }
+    g = new(Game_Memory, allocator)
+    g.allocator = allocator
+    g.snake_length = START_SNAKE_LENGTH
+    g.snake = [MAX_SNAKE_LENGTH]Vec2i{}
+    g.tick_timer = TICK_RATE
+    g.move_direction = {0, 1}
+    g.food_sprite = k2.load_texture_from_bytes(#load("../assets/food.png"))
+    g.head_sprite = k2.load_texture_from_bytes(#load("../assets/head.png"))
+    g.body_sprite = k2.load_texture_from_bytes(#load("../assets/body.png"))
+    g.tail_sprite = k2.load_texture_from_bytes(#load("../assets/tail.png"))
+    g.food_eaten_at = time.now()
+    g.started_at = time.now()
+    g.prev_time = time.now()
+    g.game_over = false
+    g.run = true
+    g.debug_draw = false
+    g.some_number = 100
 
     restart()
 
-    game_hot_reloaded(g)
     fmt.println("game.odin::init_game::end")
 }
 
 @(export)
-step_game :: proc() -> bool {
-    // fmt.println("game.odin::step_game")
+game_update :: proc() -> bool {
+    // fmt.println("game.odin::game_update")
     if !k2.update() {
         return false
     }
@@ -239,43 +241,21 @@ step_game :: proc() -> bool {
     return true
 }
 
-shutdown :: proc() {
-    fmt.println("game.odin::shutdown")
-    shutdown_game()
-    shutdown_window()
-}
-
-shutdown_game :: proc() {
-    fmt.println("game.odin::shutdown_game")
+@(export)
+game_destroy_state :: proc() {
+    fmt.println("game.odin::game_destroy_state")
     k2.destroy_texture(g.head_sprite)
     k2.destroy_texture(g.food_sprite)
     k2.destroy_texture(g.body_sprite)
     k2.destroy_texture(g.tail_sprite)
 
-    free(g)
+    free(g, g.allocator)
 }
 
-shutdown_window :: proc() {
-    fmt.println("game.odin::shutdown_window")
+@(export)
+game_shutdown :: proc() {
+    fmt.println("game.odin::game_shutdown")
     k2.shutdown()
-}
-
-@(export)
-game_init_window :: proc() {
-    fmt.println("game.odin::game_init_window")
-    init_window()
-}
-
-@(export)
-game_init_game :: proc() {
-    fmt.println("game.odin::game_init_game")
-    init_game()
-}
-
-@(export)
-game_update :: proc() {
-    // fmt.println("game.odin::game_update")
-    step_game()
 }
 
 @(export)
@@ -289,19 +269,7 @@ game_should_run :: proc() -> bool {
 }
 
 @(export)
-game_shutdown :: proc() {
-    fmt.println("game.odin::game_shutdown")
-    shutdown_game()
-}
-
-@(export)
-game_shutdown_window :: proc() {
-    fmt.println("game.odin::game_shutdown_window")
-    shutdown_window()
-}
-
-@(export)
-game_memory :: proc() -> rawptr {
+game_memory :: proc() -> ^Game_Memory {
     fmt.println("game.odin::game_memory")
     return g
 }
@@ -313,20 +281,22 @@ game_memory_size :: proc() -> int {
 }
 
 @(export)
-game_hot_reloaded :: proc(mem: rawptr) {
+game_hot_reloaded :: proc(memory: ^Game_Memory, k2_state: ^k2.State) {
     fmt.println("game.odin::game_hot_reloaded")
-    g = (^Game_Memory)(mem)
+    k2.set_internal_state(k2_state)
+    g = memory
 
     restart()
     // Here you can also set your own global variables. A good idea is to make
     // your global variables into pointers that point to something inside `g`.
 }
 
-@(export)
-game_force_reload :: proc() -> bool {
-    // fmt.println("game.odin::game_force_reload")
-    return k2.key_went_down(.F5)
-}
+// i guess only force restart supported only hot reloads if there is a new dll???
+// @(export)
+// game_force_reload :: proc() -> bool {
+//     // fmt.println("game.odin::game_force_reload")
+//     return k2.key_went_down(.F5)
+// }
 
 @(export)
 game_force_restart :: proc() -> bool {
