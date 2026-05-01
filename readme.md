@@ -1,4 +1,4 @@
-pull down karl2s submodule:
+pull down karl2d submodule:
 ```bash
 git submodule update --init --recursive
 ```
