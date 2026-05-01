@@ -1,3 +1,11 @@
+hot reload:
+```bash
+./build_hot_reload.sh
+./game_hot_reload.bin
+# make a change to the code and then build again:
+./build_hot_reload.sh
+```
+
 run on desktop:
 ```bash
 odin run .
