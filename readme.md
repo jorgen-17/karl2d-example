@@ -1,7 +1,12 @@
-pull down karl2d submodule:
+dependencies:
 ```bash
+# pull down karl2d submodule
 git submodule update --init --recursive
+# optional install fswatch if you want file watching
+sudo apt get fswatch
+# or maybe `brew install fswatch` on macos
 ```
+
 
 hot reload:
 ```bash
@@ -9,6 +14,8 @@ hot reload:
 ./game_hot_reload.bin
 # make a change to the code and then build again:
 ./build_hot_reload.sh
+# or watch source files for changes and automatically compiles them:
+./watch_hot_reload.sh
 ```
 
 run on desktop:
