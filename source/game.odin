@@ -24,7 +24,7 @@ STATUS_BAR_HEIGHT :: 20
 
 PLAYER_WIDTH: f32 : 8
 PLAYER_HEIGHT: f32 : 16
-START_POS :: Vec2{30, 100}
+START_POS :: Vec2{132, 140}
 
 Vec2 :: k2.Vec2
 Vec2i :: [2]int
@@ -39,9 +39,10 @@ Player :: struct {
 }
 
 Bullet :: struct {
-    pos: Vec2,
-    dir: Vec2,
-    age: f32,
+    pos:      Vec2,
+    dir:      Vec2,
+    collided: bool, // has collided with wall or interactible
+    age:      int,
 }
 
 // Counted in number of tiles
@@ -58,14 +59,23 @@ Room :: struct {
     interactables: [dynamic]Interactable,
 }
 
+
 Tile_Type :: enum {
-    Ground,
+    Grass,
     Wall,
+    Ground,
 }
 
 tile_walkable_lookup := [Tile_Type]bool {
+    .Grass  = true,
     .Ground = true,
     .Wall   = false,
+}
+
+tile_color_lookup := [Tile_Type]k2.Color {
+    .Grass  = k2.GREEN,
+    .Ground = k2.LIGHT_GRAY,
+    .Wall   = k2.WHITE,
 }
 
 Interactable_Type :: enum {
@@ -78,9 +88,15 @@ Interactable_Type :: enum {
 }
 
 Interactable :: struct {
-    type:   Interactable_Type,
-    pos:    Vec2,
-    health: int,
+    type:     Interactable_Type,
+    pos:      Vec2,
+    collider: k2.Rect,
+    health:   int,
+}
+
+interactible_start_health_lookup := [Interactable_Type]int {
+    .Target = 2,
+    .Enemy  = 4,
 }
 
 Direction :: enum {
@@ -101,6 +117,7 @@ Game_Memory :: struct {
     allocator:   runtime.Allocator,
     player:      Player,
     bullets:     [dynamic]Bullet,
+    colliders:   [dynamic]k2.Rect,
     room:        Room,
     font:        k2.Font,
     game_camera: k2.Camera,
@@ -116,16 +133,59 @@ Game_Memory :: struct {
 @(private = "file")
 g: ^Game_Memory
 
-restart :: proc() {
-    fmt.println("game.odin::restart")
-    g.player = Player {
-        pos       = START_POS,
-        dir       = .North,
-        move_dir  = vec2_from_direction[.North],
-        shot      = false,
+player_start :: proc() -> Player {
+    return Player {
+        pos = START_POS,
+        dir = .North,
+        move_dir = vec2_from_direction[.North],
+        shot = false,
         last_shot = time.now(),
     }
+}
 
+create_target :: proc(pos: Vec2) -> Interactable {
+    return Interactable {
+        type = .Target,
+        pos = pos,
+        health = interactible_start_health_lookup[.Target],
+    }
+}
+
+// odinfmt: disable
+level_1 :: proc() -> Room {
+    target1 := create_target({70, 34})
+    target2 := create_target({34, 82})
+    target3 := create_target({70, 110})
+    target4 := create_target({162, 62})
+    target5 := create_target({162, 98})
+    interactibles : [dynamic]Interactable
+    append(&interactibles, target1)
+    append(&interactibles, target2)
+    append(&interactibles, target3)
+    append(&interactibles, target4)
+    append(&interactibles, target5)
+    return Room {
+        tiles = [ROOM_TILE_WIDTH * ROOM_TILE_HEIGHT]Tile_Type {
+            .Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,
+            .Grass ,.Wall  ,.Wall  ,.Wall  ,.Wall  ,.Wall  ,.Wall  ,.Wall  ,.Wall  ,.Wall  ,.Wall  ,.Wall  ,.Wall  ,.Wall  ,.Grass ,
+            .Grass ,.Wall  ,.Ground,.Ground,.Ground,.Wall  ,.Ground,.Ground,.Ground,.Ground,.Ground,.Ground,.Ground,.Wall  ,.Grass ,
+            .Grass ,.Wall  ,.Ground,.Ground,.Ground,.Ground,.Ground,.Ground,.Ground,.Wall  ,.Ground,.Ground,.Ground,.Wall  ,.Grass ,
+            .Grass ,.Wall  ,.Wall  ,.Wall  ,.Wall  ,.Wall  ,.Wall  ,.Ground,.Ground,.Wall  ,.Ground,.Ground,.Ground,.Wall  ,.Grass ,
+            .Grass ,.Wall  ,.Ground,.Ground,.Ground,.Wall  ,.Ground,.Ground,.Ground,.Wall  ,.Wall  ,.Ground,.Ground,.Wall  ,.Grass ,
+            .Grass ,.Wall  ,.Ground,.Ground,.Ground,.Ground,.Ground,.Ground,.Ground,.Wall  ,.Ground,.Ground,.Ground,.Wall  ,.Grass ,
+            .Grass ,.Wall  ,.Ground,.Ground,.Ground,.Wall  ,.Ground,.Ground,.Ground,.Wall  ,.Ground,.Ground,.Ground,.Wall  ,.Grass ,
+            .Grass ,.Wall  ,.Wall  ,.Wall  ,.Wall  ,.Wall  ,.Wall  ,.Wall  ,.Ground,.Wall  ,.Wall  ,.Wall  ,.Wall  ,.Wall  ,.Grass ,
+            .Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,
+        },
+        interactables = interactibles
+    }
+}
+// odinfmt: enable
+
+restart :: proc() {
+    fmt.println("game.odin::restart")
+    g.player = player_start()
+    g.room = level_1()
     g.started_at = time.now()
     g.stop_time = time.now()
     g.game_over = false
@@ -149,16 +209,6 @@ game_init_state :: proc(k2_state: rawptr, allocator: runtime.Allocator) {
     fmt.println("game.odin::init_game")
     g = new(Game_Memory, allocator)
     g.allocator = allocator
-    g.player = {
-        pos       = START_POS,
-        dir       = .North,
-        move_dir  = vec2_from_direction[.North],
-        shot      = false,
-        last_shot = time.now(),
-    }
-    g.started_at = time.now()
-    g.stop_time = time.now()
-    g.game_over = false
     g.run = true
     g.debug_draw = false
 
@@ -239,16 +289,20 @@ handle_input :: proc() {
         g.player.shot = true
         g.player.last_shot = time.now()
     }
+
+    if k2.key_went_down(.F2) {
+        g.debug_draw = !g.debug_draw
+    }
 }
 
 update_state :: proc() {
     frame_time := k2.get_frame_time()
-    if (frame_time > 0.003) {
-        fmt.printfln(
-            "game.odin::update_state: frame_time_spike: %f",
-            frame_time,
-        )
-    }
+    // if (frame_time > 0.003) {
+    //     fmt.printfln(
+    //         "game.odin::update_state: frame_time_spike: %f",
+    //         frame_time,
+    //     )
+    // }
     // work around for large frame time spikes that are yeeting the player outside of view
     frame_time = min(frame_time, 0.005)
 
@@ -262,17 +316,69 @@ update_state :: proc() {
         g.player.dir = .North
     }
 
-    if (g.player.move_dir.x != 0 || g.player.move_dir.y != 0) {
-        g.player.pos += g.player.move_dir * frame_time * 50
-        fmt.printfln(
-            "game.odin::update_state: player moved to: x:%f,y:%f with direction: x:%f,y:%f",
-            g.player.pos.x,
-            g.player.pos.y,
-            g.player.move_dir.x,
-            g.player.move_dir.y,
-        )
-        g.player.move_dir = Vec2{0, 0}
+    // calculate colliders
+    colliders := make([dynamic]k2.Rect, context.temp_allocator)
+    for tile_type, tile_idx in g.room.tiles {
+        if tile_walkable_lookup[tile_type] {
+            continue
+        }
+
+        tile_pos := k2.Vec2 {
+            f32(tile_idx % ROOM_TILE_WIDTH) * TILE_SIZE,
+            f32(tile_idx / ROOM_TILE_WIDTH) * TILE_SIZE,
+        }
+
+        tile_rect := k2.rect_from_pos_size(tile_pos, {TILE_SIZE, TILE_SIZE})
+        append(&colliders, tile_rect)
     }
+    for &inter in g.room.interactables {
+        r := k2.rect_from_pos_size(inter.pos, {PLAYER_WIDTH, PLAYER_HEIGHT})
+        inter.collider = r
+
+        // target || enemy is down so player can walk over them
+        if (inter.type == .Target || inter.type == .Enemy) &&
+           inter.health > 0 {
+            append(&colliders, r)
+        }
+    }
+    g.colliders = colliders
+
+    to_move := g.player.move_dir * frame_time * 50
+    g.player.pos.x += to_move.x
+
+    for c in colliders {
+        pc := calc_player_collider(g.player.pos)
+        overlap, overlapping := k2.rect_overlap(pc, c)
+
+        if overlapping && overlap.w != 0 {
+            sign: f32 = pc.x + pc.w / 2 < (c.x + c.w / 2) ? -1 : 1
+            fix := overlap.w * sign
+            g.player.pos.x += fix
+        }
+    }
+
+    g.player.pos.y += to_move.y
+
+    for c in colliders {
+        pc := calc_player_collider(g.player.pos)
+        overlap, overlapping := k2.rect_overlap(pc, c)
+
+        if overlapping && overlap.h != 0 {
+            sign: f32 = pc.y + pc.h / 2 < (c.y + c.h / 2) ? -1 : 1
+            fix := overlap.h * sign
+            g.player.pos.y += fix
+        }
+    }
+
+    // helps debug player movedment
+    // fmt.printfln(
+    //     "game.odin::update_state: player moved to: x:%f,y:%f with direction: x:%f,y:%f",
+    //     g.player.pos.x,
+    //     g.player.pos.y,
+    //     g.player.move_dir.x,
+    //     g.player.move_dir.y,
+    // )
+    g.player.move_dir = Vec2{0, 0}
 
     gun_rect: k2.Rect
     gun_length: f32 = 8
@@ -314,31 +420,60 @@ update_state :: proc() {
     }
     g.player.gun_rect = gun_rect
 
-    // delete bullets after 600 frames
+    // update bullet positions and age
+    for &bullet in g.bullets {
+        bullet.pos += bullet.dir * frame_time * 250
+        bullet.age += 1
+
+        check_bullet_collisions(&bullet)
+    }
+
+    // delete bullets they collided with something or after 600 frames
     for pidx := 0; pidx < len(g.bullets); pidx += 1 {
         p := &g.bullets[pidx]
 
-        if p.age >= 600 {
+        if p.collided || p.age >= 600 {
             unordered_remove(&g.bullets, pidx)
             pidx -= 1
         }
     }
 
-    // update bullet positions and age
-    for &bullet in g.bullets {
-        bullet.pos += bullet.dir * frame_time * 250
-        bullet.age += 1
-    }
-
+    // spawn new bullets if when player shoots
     if (g.player.shot) {
         fmt.println("game.odin::update_state: player shot")
         bullet := Bullet {
-            dir = vec2_from_direction[g.player.dir],
-            pos = bullet_pos,
-            age = 0,
+            dir      = vec2_from_direction[g.player.dir],
+            pos      = bullet_pos,
+            collided = false,
+            age      = 0,
         }
         append(&g.bullets, bullet)
         g.player.shot = false
+    }
+}
+
+check_bullet_collisions :: proc(bullet: ^Bullet) {
+    bullet_rect := k2.Rect {
+        x = bullet.pos.x - 0.5,
+        y = bullet.pos.y - 0.5,
+        w = 1,
+        h = 1,
+    }
+
+    for c in g.colliders {
+        _, overlapping := k2.rect_overlap(bullet_rect, c)
+
+        if (overlapping) {
+            bullet.collided = true
+        }
+    }
+
+    for &inter in g.room.interactables {
+        _, overlapping := k2.rect_overlap(bullet_rect, inter.collider)
+
+        if (overlapping) {
+            inter.health -= 1
+        }
     }
 }
 
@@ -346,22 +481,37 @@ draw :: proc() {
     k2.clear(CLEAR_COLOR)
 
     k2.set_camera(g.game_camera)
+    k2.draw_rect({0, 0, SCREEN_WIDTH, SCREEN_HEIGHT}, GRASS_COLOR)
 
-    player_rect := k2.Rect {
-        x = g.player.pos.x,
-        y = g.player.pos.y,
-        w = PLAYER_WIDTH,
-        h = PLAYER_HEIGHT,
+    draw_room(g.room)
+    for interactible in g.room.interactables {
+        color := interactible.health > 0 ? k2.RED : k2.BLACK
+        k2.draw_rect(
+            k2.rect_from_pos_size(
+                interactible.pos,
+                {PLAYER_WIDTH, PLAYER_HEIGHT},
+            ),
+            color,
+        )
     }
-    k2.draw_rect(player_rect, k2.WHITE)
-    k2.draw_rect(g.player.gun_rect, k2.GRAY)
+
+    player_rect := k2.rect_from_pos_size(
+        g.player.pos,
+        {PLAYER_WIDTH, PLAYER_HEIGHT},
+    )
+    k2.draw_rect(player_rect, k2.BLUE)
+    k2.draw_rect(g.player.gun_rect, k2.DARK_GRAY)
+
+    if (g.debug_draw) {
+        // draw colliders
+        for collider in g.colliders {
+            k2.draw_rect(collider, k2.YELLOW)
+        }
+    }
 
     for bullet in g.bullets {
         k2.draw_circle(bullet.pos, 1, k2.LIGHT_YELLOW)
     }
-
-    k2.draw_circle(Vec2{50, 50}, 5, k2.RED)
-    k2.draw_circle(Vec2{150, 150}, 5, k2.BLUE)
 
     if g.game_over {
         k2.draw_text("Game Over!", {4, 4}, 25, k2.RL_RED)
@@ -379,8 +529,81 @@ draw :: proc() {
     k2.present()
 }
 
+draw_room :: proc(room: Room) {
+    for x in 0 ..< (ROOM_TILE_WIDTH + 1) {
+        for y in 0 ..< (ROOM_TILE_HEIGHT + 1) {
+            tile_type_lookup :: proc(room: Room, x, y: int) -> Tile_Type {
+                if x < 0 ||
+                   y < 0 ||
+                   x >= ROOM_TILE_WIDTH - 1 ||
+                   y >= ROOM_TILE_HEIGHT - 1 {
+                    return .Grass
+                }
+
+                return room.tiles[y * ROOM_TILE_WIDTH + x]
+            }
+
+            // mask := 0
+            //
+            // if tile_type(x - 1, y - 1) == .Path {
+            //     mask |= 1 // TL
+            // }
+            // if tile_type(x, y - 1) == .Path {
+            //     mask |= 2 // TR
+            // }
+            // if tile_type(x, y) == .Path {
+            //     mask |= 4 // BR
+            // }
+            // if tile_type(x - 1, y) == .Path {
+            //     mask |= 8 // BL
+            // }
+            //
+            // txty := DUAL_GRID_MASK_TO_TXTY[mask]
+            // tx := txty.x
+            // ty := txty.y
+
+            // tile_rect := k2.Rect {
+            //     x = f32(x) * TILE_SIZE,
+            //     y = f32(y) * TILE_SIZE,
+            //     w = TILE_SIZE,
+            //     h = TILE_SIZE,
+            // }
+
+            // Note the half-tile offset here: This is what "undoes" the half-tile offset that dual
+            // tile grids need.
+            pos := k2.Vec2 {
+                f32(x) * TILE_SIZE, //- TILE_SIZE / 2,
+                f32(y) * TILE_SIZE, // - TILE_SIZE / 2,
+            }
+
+            tile_type := tile_type_lookup(room, x, y)
+            tile_color := tile_color_lookup[tile_type]
+
+            tile_rect := k2.rect_from_pos_size(pos, {TILE_SIZE, TILE_SIZE})
+            k2.draw_rect(tile_rect, tile_color)
+            // if g.debug_draw {
+            //     fmt.printfln(
+            //         "drawing tile: idx:%i, idy:%i, pos.x:%f, pos.y:%f tile_type:%i",
+            //         x,
+            //         y,
+            //         tile_rect.x,
+            //         tile_rect.y,
+            //         tile_type,
+            //     )
+            // }
+
+            // k2.draw_texture_rect(tileset_path_texture, tile_rect, pos)
+        }
+    }
+}
+
 calc_player_collider :: proc(player_pos: Vec2) -> k2.Rect {
-    return {player_pos.x - 5, player_pos.y - 6, 10, 6}
+    return {
+        player_pos.x,
+        player_pos.y + (PLAYER_HEIGHT / 2),
+        PLAYER_WIDTH,
+        PLAYER_HEIGHT / 2,
+    }
 }
 
 shutdown :: proc() {

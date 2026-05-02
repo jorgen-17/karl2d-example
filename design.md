@@ -19,21 +19,26 @@ top down 2d shooter
 - [x] player movement
 - [x] gun faces where player faces.
 - [x] bullets leave barrel of gun and despawn after 600 frames
-- [ ] house walls
-- [ ] targets
-- [ ] bullet collisions: register hits and misses, update score
+- [x] house walls
+- [x] targets, make them turn black when dead
+- [x] player collisions: cant walk through walls or live targets/enemies
+- [x] bullet collisions: bullets cant go through walls and take away health from targets/enemies
 - [ ] aim gun with mouse pointer
+- [ ] keep track of score (hits and misses)
 - [ ] add timer that stops once all targets are neutralized
+- [ ] top bar UI that shows time, targets remaining and score
 - [ ] menu to pause and restart level
 - [ ] add textures to player and targets
 - [ ] add room textures
 - [ ] animate player
 - [ ] top 10 scores tracking
 - [ ] write scores to file
+- [ ] shoot vs no-shoot targets (to train not shooting civillians)
 - [ ] level editor
 - [ ] several shoot house levels
 - [ ] enemies are stationary but shoot in a line when player intersects it
 - [ ] enemies track player once they see him
+- [ ] civillian npcs that you cant shoot
 - [ ] several real houses levels
 - [ ] limited ammo capacity, invetory with magazines, each mag keeps track of how many bullets it has
 - [ ] can pick up bullets from caches
