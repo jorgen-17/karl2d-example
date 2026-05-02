@@ -306,15 +306,46 @@ update_state :: proc() {
     // work around for large frame time spikes that are yeeting the player outside of view
     frame_time = min(frame_time, 0.005)
 
-    if g.player.move_dir.x > 0 {
-        g.player.dir = .East
-    } else if g.player.move_dir.x < 0 {
-        g.player.dir = .West
-    } else if g.player.move_dir.y > 0 {
-        g.player.dir = .South
-    } else if g.player.move_dir.y < 0 {
+    mouse_pos := k2.screen_to_world(k2.get_mouse_position(), g.game_camera)
+    player_center := Vec2 {
+        g.player.pos.x + (PLAYER_WIDTH / 2),
+        g.player.pos.y + (PLAYER_HEIGHT / 2),
+    }
+    player_mouse_delta := mouse_pos - player_center
+    if player_mouse_delta.y < 0 &&
+       (abs(player_mouse_delta.y) > abs(player_mouse_delta.x)) {
         g.player.dir = .North
     }
+    if player_mouse_delta.y > 0 &&
+       (abs(player_mouse_delta.y) > abs(player_mouse_delta.x)) {
+        g.player.dir = .South
+    }
+    if player_mouse_delta.x > 0 &&
+       (abs(player_mouse_delta.x) > abs(player_mouse_delta.y)) {
+        g.player.dir = .East
+    }
+    if player_mouse_delta.x < 0 &&
+       (abs(player_mouse_delta.x) > abs(player_mouse_delta.y)) {
+        g.player.dir = .West
+    }
+    // if k2.mouse_button_went_down(.Left) {
+    //     fmt.printfln(
+    //         "game.odin::update_state: player_center x:%f,y:%f",
+    //         player_center.x,
+    //         player_center.y,
+    //     )
+    //     fmt.printfln(
+    //         "game.odin::update_state: mouse_pos x:%f,y:%f",
+    //         mouse_pos.x,
+    //         mouse_pos.y,
+    //     )
+    //     fmt.printfln(
+    //         "game.odin::update_state: player_mouse_delta x:%f,y:%f",
+    //         player_mouse_delta.x,
+    //         player_mouse_delta.y,
+    //     )
+    // }
+
 
     // calculate colliders
     colliders := make([dynamic]k2.Rect, context.temp_allocator)
@@ -441,8 +472,9 @@ update_state :: proc() {
     // spawn new bullets if when player shoots
     if (g.player.shot) {
         fmt.println("game.odin::update_state: player shot")
+        bullet_dir := calc_bullet_dir(bullet_pos)
         bullet := Bullet {
-            dir      = vec2_from_direction[g.player.dir],
+            dir      = bullet_dir,
             pos      = bullet_pos,
             collided = false,
             age      = 0,
@@ -475,6 +507,28 @@ check_bullet_collisions :: proc(bullet: ^Bullet) {
             inter.health -= 1
         }
     }
+}
+
+calc_bullet_dir :: proc(bullet_pos: Vec2) -> Vec2 {
+    mouse_pos := k2.screen_to_world(k2.get_mouse_position(), g.game_camera)
+    mouse_bullet_delta := mouse_pos - bullet_pos
+    norm_mouse_bullet_delta := linalg.normalize0(mouse_bullet_delta)
+    // fmt.printfln(
+    //     "game.odin::calc_bullet_dir: mouse_pos x:%f,y:%f",
+    //     mouse_pos.x,
+    //     mouse_pos.y,
+    // )
+    // fmt.printfln(
+    //     "game.odin::calc_bullet_dir: mouse_bullet_delta x:%f,y:%f",
+    //     mouse_bullet_delta.x,
+    //     mouse_bullet_delta.y,
+    // )
+    // fmt.printfln(
+    //     "game.odin::calc_bullet_dir: norm_mouse_bullet_delta x:%f,y:%f",
+    //     norm_mouse_bullet_delta.x,
+    //     norm_mouse_bullet_delta.y,
+    // )
+    return norm_mouse_bullet_delta
 }
 
 draw :: proc() {
