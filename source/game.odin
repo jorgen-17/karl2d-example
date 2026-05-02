@@ -45,6 +45,11 @@ Bullet :: struct {
     age:      int,
 }
 
+Score :: struct {
+    hits:   int,
+    misses: int,
+}
+
 // Counted in number of tiles
 ROOM_TILE_WIDTH :: 15
 ROOM_TILE_HEIGHT :: 10
@@ -114,20 +119,22 @@ vec2_from_direction := [Direction]Vec2 {
 }
 
 Game_Memory :: struct {
-    allocator:   runtime.Allocator,
-    player:      Player,
-    bullets:     [dynamic]Bullet,
-    colliders:   [dynamic]k2.Rect,
-    room:        Room,
-    font:        k2.Font,
-    game_camera: k2.Camera,
-    ui_camera:   k2.Camera,
-    started_at:  time.Time,
-    stop_time:   time.Time,
-    game_over:   bool,
-    run:         bool,
-    pause:       bool,
-    debug_draw:  bool,
+    allocator:      runtime.Allocator,
+    player:         Player,
+    bullets:        [dynamic]Bullet,
+    all_colliders:  [dynamic]k2.Rect, // captures walls and target
+    wall_colliders: [dynamic]k2.Rect, // only captures walls
+    room:           Room,
+    font:           k2.Font,
+    game_camera:    k2.Camera,
+    ui_camera:      k2.Camera,
+    started_at:     time.Time,
+    stop_time:      time.Time,
+    score:          Score,
+    game_over:      bool,
+    run:            bool,
+    pause:          bool,
+    debug_draw:     bool,
 }
 
 @(private = "file")
@@ -186,6 +193,10 @@ restart :: proc() {
     fmt.println("game.odin::restart")
     g.player = player_start()
     g.room = level_1()
+    g.score = Score {
+        hits   = 0,
+        misses = 0,
+    }
     g.started_at = time.now()
     g.stop_time = time.now()
     g.game_over = false
@@ -285,7 +296,7 @@ handle_input :: proc() {
     }
 
     if (k2.key_went_down(.Space) || k2.mouse_button_is_held(.Left)) &&
-       (time.duration_milliseconds(time.since(g.player.last_shot)) > 100) {
+       (time.duration_milliseconds(time.since(g.player.last_shot)) > 150) {
         g.player.shot = true
         g.player.last_shot = time.now()
     }
@@ -346,9 +357,9 @@ update_state :: proc() {
     //     )
     // }
 
-
     // calculate colliders
-    colliders := make([dynamic]k2.Rect, context.temp_allocator)
+    all_colliders := make([dynamic]k2.Rect, context.temp_allocator)
+    wall_colliders := make([dynamic]k2.Rect, context.temp_allocator)
     for tile_type, tile_idx in g.room.tiles {
         if tile_walkable_lookup[tile_type] {
             continue
@@ -360,7 +371,8 @@ update_state :: proc() {
         }
 
         tile_rect := k2.rect_from_pos_size(tile_pos, {TILE_SIZE, TILE_SIZE})
-        append(&colliders, tile_rect)
+        append(&all_colliders, tile_rect)
+        append(&wall_colliders, tile_rect)
     }
     for &inter in g.room.interactables {
         r := k2.rect_from_pos_size(inter.pos, {PLAYER_WIDTH, PLAYER_HEIGHT})
@@ -369,15 +381,16 @@ update_state :: proc() {
         // target || enemy is down so player can walk over them
         if (inter.type == .Target || inter.type == .Enemy) &&
            inter.health > 0 {
-            append(&colliders, r)
+            append(&all_colliders, r)
         }
     }
-    g.colliders = colliders
+    g.all_colliders = all_colliders
+    g.wall_colliders = wall_colliders
 
     to_move := g.player.move_dir * frame_time * 50
     g.player.pos.x += to_move.x
 
-    for c in colliders {
+    for c in all_colliders {
         pc := calc_player_collider(g.player.pos)
         overlap, overlapping := k2.rect_overlap(pc, c)
 
@@ -390,7 +403,7 @@ update_state :: proc() {
 
     g.player.pos.y += to_move.y
 
-    for c in colliders {
+    for c in all_colliders {
         pc := calc_player_collider(g.player.pos)
         overlap, overlapping := k2.rect_overlap(pc, c)
 
@@ -464,6 +477,7 @@ update_state :: proc() {
         p := &g.bullets[pidx]
 
         if p.collided || p.age >= 600 {
+            g.score.misses += p.age >= 600 ? 1 : 0
             unordered_remove(&g.bullets, pidx)
             pidx -= 1
         }
@@ -492,19 +506,22 @@ check_bullet_collisions :: proc(bullet: ^Bullet) {
         h = 1,
     }
 
-    for c in g.colliders {
+    for c in g.wall_colliders {
         _, overlapping := k2.rect_overlap(bullet_rect, c)
 
         if (overlapping) {
             bullet.collided = true
+            g.score.misses += 1
         }
     }
 
     for &inter in g.room.interactables {
         _, overlapping := k2.rect_overlap(bullet_rect, inter.collider)
 
-        if (overlapping) {
+        if (overlapping && inter.health > 0) {
+            bullet.collided = true
             inter.health -= 1
+            g.score.hits += 1
         }
     }
 }
@@ -558,7 +575,7 @@ draw :: proc() {
 
     if (g.debug_draw) {
         // draw colliders
-        for collider in g.colliders {
+        for collider in g.all_colliders {
             k2.draw_rect(collider, k2.YELLOW)
         }
     }
@@ -567,6 +584,7 @@ draw :: proc() {
         k2.draw_circle(bullet.pos, 1, k2.LIGHT_YELLOW)
     }
 
+    k2.set_camera(g.ui_camera)
     if g.game_over {
         k2.draw_text("Game Over!", {4, 4}, 25, k2.RL_RED)
         k2.draw_text("Press Enter to play again", {4, 30}, 15, k2.BLACK)
@@ -576,9 +594,9 @@ draw :: proc() {
         k2.draw_text("Pause", {50, 50}, 25, k2.BLACK)
     }
 
-    score := 0
+    score := g.score.hits - g.score.misses
     score_str := fmt.tprintf("Score: %v", score)
-    k2.draw_text(score_str, {4, WINDOW_WIDTH - 14}, 10, k2.RL_GRAY)
+    k2.draw_text(score_str, {200, 4}, 10, k2.WHITE)
 
     k2.present()
 }
