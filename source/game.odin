@@ -18,19 +18,24 @@ HIGHLIGHT_COLOR :: k2.Color{149, 224, 204, 255}
 // We zoom the game up to fit this size
 SCREEN_WIDTH :: 240
 SCREEN_HEIGHT :: 180
+WINDOW_WIDTH :: SCREEN_WIDTH * 4
+WINDOW_HEIGHT :: SCREEN_HEIGHT * 4
 STATUS_BAR_HEIGHT :: 20
 
-WINDOW_WIDTH :: 1280
-WINDOW_HEIGHT :: 720
+PLAYER_WIDTH: f32 : 8
+PLAYER_HEIGHT: f32 : 16
 START_POS :: Vec2{30, 100}
 
 Vec2 :: k2.Vec2
 Vec2i :: [2]int
 
 Player :: struct {
-    pos:      Vec2,
-    dir:      Direction,
-    move_dir: Vec2,
+    pos:       Vec2,
+    dir:       Direction,
+    move_dir:  Vec2,
+    gun_rect:  k2.Rect,
+    shot:      bool,
+    last_shot: time.Time,
 }
 
 Bullet :: struct {
@@ -114,9 +119,11 @@ g: ^Game_Memory
 restart :: proc() {
     fmt.println("game.odin::restart")
     g.player = Player {
-        pos      = START_POS,
-        dir      = .North,
-        move_dir = vec2_from_direction[.North],
+        pos       = START_POS,
+        dir       = .North,
+        move_dir  = vec2_from_direction[.North],
+        shot      = false,
+        last_shot = time.now(),
     }
 
     g.started_at = time.now()
@@ -129,8 +136,8 @@ restart :: proc() {
 game_startup :: proc(allocator: runtime.Allocator) -> (k2_state: rawptr) {
     fmt.println("game.odin::game_startup")
     return k2.init(
-        SCREEN_WIDTH * 4,
-        SCREEN_HEIGHT * 4,
+        WINDOW_WIDTH,
+        WINDOW_HEIGHT,
         "shoot_house",
         allocator = allocator,
         options = {window_mode = .Windowed_Resizable},
@@ -143,9 +150,11 @@ game_init_state :: proc(k2_state: rawptr, allocator: runtime.Allocator) {
     g = new(Game_Memory, allocator)
     g.allocator = allocator
     g.player = {
-        pos      = START_POS,
-        dir      = .North,
-        move_dir = vec2_from_direction[.North],
+        pos       = START_POS,
+        dir       = .North,
+        move_dir  = vec2_from_direction[.North],
+        shot      = false,
+        last_shot = time.now(),
     }
     g.started_at = time.now()
     g.stop_time = time.now()
@@ -224,6 +233,12 @@ handle_input :: proc() {
     if k2.key_is_held(.Q) {
         shutdown()
     }
+
+    if (k2.key_went_down(.Space) || k2.mouse_button_is_held(.Left)) &&
+       (time.duration_milliseconds(time.since(g.player.last_shot)) > 100) {
+        g.player.shot = true
+        g.player.last_shot = time.now()
+    }
 }
 
 update_state :: proc() {
@@ -234,6 +249,8 @@ update_state :: proc() {
             frame_time,
         )
     }
+    // work around for large frame time spikes that are yeeting the player outside of view
+    frame_time = min(frame_time, 0.005)
 
     if g.player.move_dir.x > 0 {
         g.player.dir = .East
@@ -246,8 +263,6 @@ update_state :: proc() {
     }
 
     if (g.player.move_dir.x != 0 || g.player.move_dir.y != 0) {
-        // work around for large frame time spikes that are yeeting the player outside of view
-        frame_time = min(frame_time, 0.005)
         g.player.pos += g.player.move_dir * frame_time * 50
         fmt.printfln(
             "game.odin::update_state: player moved to: x:%f,y:%f with direction: x:%f,y:%f",
@@ -257,6 +272,73 @@ update_state :: proc() {
             g.player.move_dir.y,
         )
         g.player.move_dir = Vec2{0, 0}
+    }
+
+    gun_rect: k2.Rect
+    gun_length: f32 = 8
+    gun_thickness: f32 = 2
+    bullet_pos: Vec2
+    switch g.player.dir {
+    case .North:
+        gun_rect = k2.Rect {
+            w = gun_thickness,
+            h = gun_length,
+            x = g.player.pos.x + PLAYER_WIDTH - gun_thickness,
+            y = g.player.pos.y - gun_length,
+        }
+        bullet_pos = {gun_rect.x, gun_rect.y}
+    case .South:
+        gun_rect = k2.Rect {
+            w = gun_thickness,
+            h = gun_length,
+            x = g.player.pos.x,
+            y = g.player.pos.y + gun_length,
+        }
+        bullet_pos = {gun_rect.x, gun_rect.y + gun_length}
+    case .East:
+        gun_rect = k2.Rect {
+            w = gun_length,
+            h = gun_thickness,
+            x = g.player.pos.x + 2,
+            y = g.player.pos.y + (PLAYER_HEIGHT / 2),
+        }
+        bullet_pos = {gun_rect.x + gun_length, gun_rect.y}
+    case .West:
+        gun_rect = k2.Rect {
+            w = gun_length,
+            h = gun_thickness,
+            x = g.player.pos.x - 2,
+            y = g.player.pos.y + (PLAYER_HEIGHT / 2),
+        }
+        bullet_pos = {gun_rect.x, gun_rect.y}
+    }
+    g.player.gun_rect = gun_rect
+
+    // delete bullets after 600 frames
+    for pidx := 0; pidx < len(g.bullets); pidx += 1 {
+        p := &g.bullets[pidx]
+
+        if p.age >= 600 {
+            unordered_remove(&g.bullets, pidx)
+            pidx -= 1
+        }
+    }
+
+    // update bullet positions and age
+    for &bullet in g.bullets {
+        bullet.pos += bullet.dir * frame_time * 250
+        bullet.age += 1
+    }
+
+    if (g.player.shot) {
+        fmt.println("game.odin::update_state: player shot")
+        bullet := Bullet {
+            dir = vec2_from_direction[g.player.dir],
+            pos = bullet_pos,
+            age = 0,
+        }
+        append(&g.bullets, bullet)
+        g.player.shot = false
     }
 }
 
@@ -268,44 +350,15 @@ draw :: proc() {
     player_rect := k2.Rect {
         x = g.player.pos.x,
         y = g.player.pos.y,
-        w = 8,
-        h = 16,
+        w = PLAYER_WIDTH,
+        h = PLAYER_HEIGHT,
     }
     k2.draw_rect(player_rect, k2.WHITE)
-    gun_rect: k2.Rect
-    gun_length: f32 = 8
-    gun_thickness: f32 = 2
-    switch g.player.dir {
-    case .North:
-        gun_rect = k2.Rect {
-            w = gun_thickness,
-            h = gun_length,
-            x = player_rect.x + player_rect.w - gun_thickness,
-            y = player_rect.y - gun_length,
-        }
-    case .South:
-        gun_rect = k2.Rect {
-            w = gun_thickness,
-            h = gun_length,
-            x = player_rect.x,
-            y = player_rect.y + gun_length,
-        }
-    case .East:
-        gun_rect = k2.Rect {
-            w = gun_length,
-            h = gun_thickness,
-            x = player_rect.x + 2,
-            y = player_rect.y + (player_rect.h / 2),
-        }
-    case .West:
-        gun_rect = k2.Rect {
-            w = gun_length,
-            h = gun_thickness,
-            x = player_rect.x - 2,
-            y = player_rect.y + (player_rect.h / 2),
-        }
+    k2.draw_rect(g.player.gun_rect, k2.GRAY)
+
+    for bullet in g.bullets {
+        k2.draw_circle(bullet.pos, 1, k2.LIGHT_YELLOW)
     }
-    k2.draw_rect(gun_rect, k2.GRAY)
 
     k2.draw_circle(Vec2{50, 50}, 5, k2.RED)
     k2.draw_circle(Vec2{150, 150}, 5, k2.BLUE)

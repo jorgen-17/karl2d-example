@@ -18,7 +18,7 @@ top down 2d shooter
 ## features:
 - [x] player movement
 - [x] gun faces where player faces.
-- [ ] bullets leave barrel of gun and disapears when offscreen
+- [x] bullets leave barrel of gun and despawn after 600 frames
 - [ ] house walls
 - [ ] targets
 - [ ] bullet collisions: register hits and misses, update score
