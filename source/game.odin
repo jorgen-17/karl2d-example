@@ -272,6 +272,40 @@ draw :: proc() {
         h = 16,
     }
     k2.draw_rect(player_rect, k2.WHITE)
+    gun_rect: k2.Rect
+    gun_length: f32 = 8
+    gun_thickness: f32 = 2
+    switch g.player.dir {
+    case .North:
+        gun_rect = k2.Rect {
+            w = gun_thickness,
+            h = gun_length,
+            x = player_rect.x + player_rect.w - gun_thickness,
+            y = player_rect.y - gun_length,
+        }
+    case .South:
+        gun_rect = k2.Rect {
+            w = gun_thickness,
+            h = gun_length,
+            x = player_rect.x,
+            y = player_rect.y + gun_length,
+        }
+    case .East:
+        gun_rect = k2.Rect {
+            w = gun_length,
+            h = gun_thickness,
+            x = player_rect.x + 2,
+            y = player_rect.y + (player_rect.h / 2),
+        }
+    case .West:
+        gun_rect = k2.Rect {
+            w = gun_length,
+            h = gun_thickness,
+            x = player_rect.x - 2,
+            y = player_rect.y + (player_rect.h / 2),
+        }
+    }
+    k2.draw_rect(gun_rect, k2.GRAY)
 
     k2.draw_circle(Vec2{50, 50}, 5, k2.RED)
     k2.draw_circle(Vec2{150, 150}, 5, k2.BLUE)

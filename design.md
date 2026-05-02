@@ -17,7 +17,7 @@ top down 2d shooter
 
 ## features:
 - [x] player movement
-- [ ] gun faces where player faces.
+- [x] gun faces where player faces.
 - [ ] bullets leave barrel of gun and disapears when offscreen
 - [ ] house walls
 - [ ] targets
