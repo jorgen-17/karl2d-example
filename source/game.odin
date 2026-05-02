@@ -6,89 +6,132 @@ import k2 "../libs/karl2d/"
 
 import "base:runtime"
 import "core:fmt"
-import "core:math"
-import "core:math/rand"
+import "core:math/linalg"
 import "core:time"
 
-WINDOW_SIZE :: 1000
-GRID_WIDTH :: 20
-CELL_SIZE :: 16
-CANVAS_SIZE :: GRID_WIDTH * CELL_SIZE
-TICK_RATE :: 0.25
+CLEAR_COLOR :: k2.Color{6, 6, 8, 255}
+WALL_COLOR :: k2.WHITE
+GRASS_COLOR :: k2.GREEN
+GROUND_COLOR :: k2.GRAY
+HIGHLIGHT_COLOR :: k2.Color{149, 224, 204, 255}
+
+// We zoom the game up to fit this size
+SCREEN_WIDTH :: 240
+SCREEN_HEIGHT :: 180
+STATUS_BAR_HEIGHT :: 20
+
+WINDOW_WIDTH :: 1280
+WINDOW_HEIGHT :: 720
+START_POS :: Vec2{30, 100}
+
+Vec2 :: k2.Vec2
 Vec2i :: [2]int
-MAX_SNAKE_LENGTH :: GRID_WIDTH * GRID_WIDTH
-START_SNAKE_LENGTH :: 3
+
+Player :: struct {
+    pos:      Vec2,
+    dir:      Direction,
+    move_dir: Vec2,
+}
+
+Bullet :: struct {
+    pos: Vec2,
+    dir: Vec2,
+    age: f32,
+}
+
+// Counted in number of tiles
+ROOM_TILE_WIDTH :: 15
+ROOM_TILE_HEIGHT :: 10
+
+// Pixel size of a tile
+TILE_SIZE :: 16
+
+Room :: struct {
+    tiles:         [ROOM_TILE_WIDTH * ROOM_TILE_HEIGHT]Tile_Type,
+    // background_objects: [dynamic]Background_Object,
+    // foreground_objects: [dynamic]Foreground_Object,
+    interactables: [dynamic]Interactable,
+}
+
+Tile_Type :: enum {
+    Ground,
+    Wall,
+}
+
+tile_walkable_lookup := [Tile_Type]bool {
+    .Ground = true,
+    .Wall   = false,
+}
+
+Interactable_Type :: enum {
+    Target,
+    Enemy,
+    // Ammo,
+    // Med_Kit,
+    // Door,
+    // The_Object,
+}
+
+Interactable :: struct {
+    type:   Interactable_Type,
+    pos:    Vec2,
+    health: int,
+}
+
+Direction :: enum {
+    East,
+    West,
+    North,
+    South,
+}
+
+vec2_from_direction := [Direction]Vec2 {
+    .East  = {1, 0},
+    .West  = {-1, 0},
+    .North = {0, -1},
+    .South = {0, 1},
+}
 
 Game_Memory :: struct {
-    allocator:      runtime.Allocator,
-    start_head_pos: Vec2i,
-    snake:          [MAX_SNAKE_LENGTH]Vec2i,
-    snake_length:   int,
-    tick_timer:     f32,
-    move_direction: Vec2i,
-    game_over:      bool,
-    food_pos:       Vec2i,
-    font:           k2.Font,
-    food_sprite:    k2.Texture,
-    head_sprite:    k2.Texture,
-    body_sprite:    k2.Texture,
-    tail_sprite:    k2.Texture,
-    food_eaten_at:  time.Time,
-    started_at:     time.Time,
-    prev_time:      time.Time,
-    some_number:    int,
-    run:            bool,
-    pause:          bool,
-    debug_draw:     bool,
+    allocator:   runtime.Allocator,
+    player:      Player,
+    bullets:     [dynamic]Bullet,
+    room:        Room,
+    font:        k2.Font,
+    game_camera: k2.Camera,
+    ui_camera:   k2.Camera,
+    started_at:  time.Time,
+    stop_time:   time.Time,
+    game_over:   bool,
+    run:         bool,
+    pause:       bool,
+    debug_draw:  bool,
 }
 
 @(private = "file")
 g: ^Game_Memory
 
-place_food :: proc() {
-    fmt.println("game.odin::place_food")
-    occupied: [GRID_WIDTH][GRID_WIDTH]bool
-
-    for i in 0 ..< g.snake_length {
-        occupied[g.snake[i].x][g.snake[i].y] = true
-    }
-
-    free_cells := make([dynamic]Vec2i, context.temp_allocator)
-
-    for x in 0 ..< GRID_WIDTH {
-        for y in 0 ..< GRID_WIDTH {
-            if !occupied[x][y] {
-                append(&free_cells, Vec2i{x, y})
-            }
-        }
-    }
-
-    if len(free_cells) > 0 {
-        random_cell_index := rand.int31_max(i32(len(free_cells)))
-        g.food_pos = free_cells[random_cell_index]
-    }
-}
-
 restart :: proc() {
     fmt.println("game.odin::restart")
-    start_head_pos := Vec2i{GRID_WIDTH / 2, GRID_WIDTH / 2}
-    g.snake[0] = start_head_pos
-    g.snake[1] = start_head_pos - {0, 1}
-    g.snake[2] = start_head_pos - {0, 2}
-    g.snake_length = START_SNAKE_LENGTH
-    g.move_direction = {0, 1}
+    g.player = Player {
+        pos      = START_POS,
+        dir      = .North,
+        move_dir = vec2_from_direction[.North],
+    }
+
+    g.started_at = time.now()
+    g.stop_time = time.now()
     g.game_over = false
     g.pause = false
-    place_food()
 }
 
 @(export)
 game_startup :: proc(allocator: runtime.Allocator) -> (k2_state: rawptr) {
     fmt.println("game.odin::game_startup")
     return k2.init(
-        WINDOW_SIZE,
-        WINDOW_SIZE,
-        "Snake",
+        SCREEN_WIDTH * 4,
+        SCREEN_HEIGHT * 4,
+        "shoot_house",
         allocator = allocator,
         options = {window_mode = .Windowed_Resizable},
     )
@@ -99,67 +142,50 @@ game_init_state :: proc(k2_state: rawptr, allocator: runtime.Allocator) {
     fmt.println("game.odin::init_game")
     g = new(Game_Memory, allocator)
     g.allocator = allocator
-    g.snake_length = START_SNAKE_LENGTH
-    g.snake = [MAX_SNAKE_LENGTH]Vec2i{}
-    g.tick_timer = TICK_RATE
-    g.move_direction = {0, 1}
-    g.food_sprite = k2.load_texture_from_bytes(#load("../assets/food.png"))
-    g.head_sprite = k2.load_texture_from_bytes(#load("../assets/head.png"))
-    g.body_sprite = k2.load_texture_from_bytes(#load("../assets/body.png"))
-    g.tail_sprite = k2.load_texture_from_bytes(#load("../assets/tail.png"))
-    g.food_eaten_at = time.now()
+    g.player = {
+        pos      = START_POS,
+        dir      = .North,
+        move_dir = vec2_from_direction[.North],
+    }
     g.started_at = time.now()
-    g.prev_time = time.now()
+    g.stop_time = time.now()
     g.game_over = false
     g.run = true
     g.debug_draw = false
-    g.some_number = 100
 
     restart()
-
-    fmt.println("game.odin::init_game::end")
 }
 
 @(export)
 game_update :: proc() -> bool {
-    // fmt.println("game.odin::game_update")
     if !k2.update() {
         return false
     }
 
-    if k2.key_is_held(.Up) || k2.gamepad_button_is_held(0, .Left_Face_Up) {
-        g.move_direction = {0, -1}
+    handle_input()
+
+    g.game_camera = {
+        zoom   = f32(k2.get_screen_height()) / SCREEN_HEIGHT,
+        target = {0, -STATUS_BAR_HEIGHT},
     }
 
-    if k2.key_is_held(.Down) || k2.gamepad_button_is_held(0, .Left_Face_Down) {
-        g.move_direction = {0, 1}
+    g.ui_camera = {
+        zoom = f32(k2.get_screen_height()) / SCREEN_HEIGHT,
     }
 
-    if k2.key_is_held(.Left) || k2.gamepad_button_is_held(0, .Left_Face_Left) {
-        g.move_direction = {-1, 0}
-    }
-
-    if k2.key_is_held(.Right) ||
-       k2.gamepad_button_is_held(0, .Left_Face_Right) {
-        g.move_direction = {1, 0}
-    }
-
-    if k2.key_is_held(.Escape) && !g.game_over {
-        g.pause = !g.pause
-    }
-
-    if k2.key_is_held(.Q) {
-        shutdown()
-    }
-
-    dt := k2.get_frame_time()
+    k2.set_scissor_rect(
+        k2.Rect {
+            0,
+            0,
+            SCREEN_WIDTH * g.game_camera.zoom,
+            SCREEN_HEIGHT * g.game_camera.zoom,
+        },
+    )
 
     if g.game_over {
         if k2.key_went_down(.Enter) {
             restart()
         }
-    } else {
-        g.tick_timer -= dt
     }
 
     if !g.pause {
@@ -173,82 +199,82 @@ game_update :: proc() -> bool {
     return true
 }
 
+handle_input :: proc() {
+    if k2.key_is_held(.W) || k2.gamepad_button_is_held(0, .Left_Face_Up) {
+        g.player.move_dir.y -= 1
+    }
+
+    if k2.key_is_held(.S) || k2.gamepad_button_is_held(0, .Left_Face_Down) {
+        g.player.move_dir.y += 1
+    }
+
+    if k2.key_is_held(.A) || k2.gamepad_button_is_held(0, .Left_Face_Left) {
+        g.player.move_dir.x = -1
+    }
+
+    if k2.key_is_held(.D) || k2.gamepad_button_is_held(0, .Left_Face_Right) {
+        g.player.move_dir.x += 1
+    }
+    g.player.move_dir = linalg.normalize0(g.player.move_dir)
+
+    if k2.key_is_held(.Escape) && !g.game_over {
+        g.pause = !g.pause
+    }
+
+    if k2.key_is_held(.Q) {
+        shutdown()
+    }
+}
+
 update_state :: proc() {
-    if g.tick_timer <= 0 {
-        next_part_pos := g.snake[0]
-        g.snake[0] += g.move_direction
-        head_pos := g.snake[0]
+    frame_time := k2.get_frame_time()
+    if (frame_time > 0.003) {
+        fmt.printfln(
+            "game.odin::update_state: frame_time_spike: %f",
+            frame_time,
+        )
+    }
 
-        if head_pos.x < 0 ||
-           head_pos.y < 0 ||
-           head_pos.x >= GRID_WIDTH ||
-           head_pos.y >= GRID_WIDTH {
-            g.game_over = true
-        }
+    if g.player.move_dir.x > 0 {
+        g.player.dir = .East
+    } else if g.player.move_dir.x < 0 {
+        g.player.dir = .West
+    } else if g.player.move_dir.y > 0 {
+        g.player.dir = .South
+    } else if g.player.move_dir.y < 0 {
+        g.player.dir = .North
+    }
 
-        for i in 1 ..< g.snake_length {
-            cur_pos := g.snake[i]
-
-            if cur_pos == head_pos {
-                g.game_over = true
-            }
-
-            g.snake[i] = next_part_pos
-            next_part_pos = cur_pos
-        }
-
-        if head_pos == g.food_pos {
-            g.snake_length += 1
-            g.snake[g.snake_length - 1] = next_part_pos
-            place_food()
-            g.food_eaten_at = time.now()
-        }
-
-        g.tick_timer = TICK_RATE + g.tick_timer
+    if (g.player.move_dir.x != 0 || g.player.move_dir.y != 0) {
+        // work around for large frame time spikes that are yeeting the player outside of view
+        frame_time = min(frame_time, 0.005)
+        g.player.pos += g.player.move_dir * frame_time * 50
+        fmt.printfln(
+            "game.odin::update_state: player moved to: x:%f,y:%f with direction: x:%f,y:%f",
+            g.player.pos.x,
+            g.player.pos.y,
+            g.player.move_dir.x,
+            g.player.move_dir.y,
+        )
+        g.player.move_dir = Vec2{0, 0}
     }
 }
 
 draw :: proc() {
-    k2.clear({76, 53, 183, 255})
+    k2.clear(CLEAR_COLOR)
 
-    camera := k2.Camera {
-        zoom = k2.get_window_scale() * (f32(WINDOW_SIZE) / CANVAS_SIZE),
+    k2.set_camera(g.game_camera)
+
+    player_rect := k2.Rect {
+        x = g.player.pos.x,
+        y = g.player.pos.y,
+        w = 8,
+        h = 16,
     }
+    k2.draw_rect(player_rect, k2.WHITE)
 
-    k2.set_camera(camera)
-
-    food_pos := k2.Vec2{f32(g.food_pos.x), f32(g.food_pos.y)} * CELL_SIZE
-    k2.draw_texture(g.food_sprite, food_pos)
-
-    for i in 0 ..< g.snake_length {
-        part_sprite := g.body_sprite
-        dir: Vec2i
-
-        if i == 0 {
-            part_sprite = g.head_sprite
-            dir = g.snake[i] - g.snake[i + 1]
-        } else if i == g.snake_length - 1 {
-            part_sprite = g.tail_sprite
-            dir = g.snake[i - 1] - g.snake[i]
-        } else {
-            dir = g.snake[i - 1] - g.snake[i]
-        }
-
-        origin := k2.rect_middle(k2.get_texture_rect(part_sprite))
-        rotation := math.atan2(f32(dir.y), f32(dir.x))
-
-        part_pos := k2.Vec2 {
-            f32(g.snake[i].x) * CELL_SIZE + origin.x,
-            f32(g.snake[i].y) * CELL_SIZE + origin.y,
-        }
-
-        k2.draw_texture(
-            part_sprite,
-            part_pos,
-            origin = origin,
-            rotation = rotation,
-        )
-    }
+    k2.draw_circle(Vec2{50, 50}, 5, k2.RED)
+    k2.draw_circle(Vec2{150, 150}, 5, k2.BLUE)
 
     if g.game_over {
         k2.draw_text("Game Over!", {4, 4}, 25, k2.RL_RED)
@@ -259,11 +285,15 @@ draw :: proc() {
         k2.draw_text("Pause", {50, 50}, 25, k2.BLACK)
     }
 
-    score := g.snake_length - START_SNAKE_LENGTH
+    score := 0
     score_str := fmt.tprintf("Score: %v", score)
-    k2.draw_text(score_str, {4, CANVAS_SIZE - 14}, 10, k2.RL_GRAY)
+    k2.draw_text(score_str, {4, WINDOW_WIDTH - 14}, 10, k2.RL_GRAY)
 
     k2.present()
+}
+
+calc_player_collider :: proc(player_pos: Vec2) -> k2.Rect {
+    return {player_pos.x - 5, player_pos.y - 6, 10, 6}
 }
 
 shutdown :: proc() {
@@ -271,14 +301,15 @@ shutdown :: proc() {
     game_shutdown()
 }
 
+destroy_room :: proc(room: Room) {
+    delete(room.interactables)
+}
+
 @(export)
 game_destroy_state :: proc() {
     fmt.println("game.odin::game_destroy_state")
-    k2.destroy_texture(g.head_sprite)
-    k2.destroy_texture(g.food_sprite)
-    k2.destroy_texture(g.body_sprite)
-    k2.destroy_texture(g.tail_sprite)
-
+    destroy_room(g.room)
+    delete(g.bullets)
     free(g, g.allocator)
 }
 
