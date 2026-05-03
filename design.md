@@ -26,7 +26,7 @@ top down 2d shooter
 - [x] aim gun with mouse pointer, character also faces where the mouse is
 - [x] keep track of score (hits and misses) and display on top bar
 - [x] add timer that stops once all targets are neutralized and display on top bar
-- [ ] shows targets remaining on top bar
+- [x] shows targets remaining on top bar
 - [ ] menu to pause and restart level
 - [ ] add textures to player and targets
 - [ ] add room textures

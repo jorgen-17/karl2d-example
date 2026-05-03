@@ -128,6 +128,7 @@ Game_Memory :: struct {
     font:           k2.Font,
     game_camera:    k2.Camera,
     ui_camera:      k2.Camera,
+    live_targets:   int,
     start_time:     time.Time,
     stop_time:      time.Time,
     score:          Score,
@@ -193,6 +194,14 @@ restart :: proc() {
     fmt.println("game.odin::restart")
     g.player = player_start()
     g.room = level_1()
+    live_targets := 0
+    for inter in g.room.interactables {
+        if (inter.type == .Target || inter.type == .Enemy) &&
+           inter.health > 0 {
+            live_targets += 1
+        }
+    }
+    g.live_targets = live_targets
     g.score = Score {
         hits   = 0,
         misses = 0,
@@ -498,17 +507,8 @@ update_state :: proc() {
         g.player.shot = false
     }
 
-    if g.start_time == g.stop_time {
-        remaining_targets := 0
-        for inter in g.room.interactables {
-            if (inter.type == .Target || inter.type == .Enemy) &&
-               inter.health > 0 {
-                remaining_targets += 1
-            }
-        }
-        if remaining_targets == 0 {
-            g.stop_time = time.now()
-        }
+    if g.live_targets == 0 && g.start_time == g.stop_time {
+        g.stop_time = time.now()
     }
 }
 
@@ -536,6 +536,9 @@ check_bullet_collisions :: proc(bullet: ^Bullet) {
             bullet.collided = true
             inter.health -= 1
             g.score.hits += 1
+            if inter.health == 0 {
+                g.live_targets -= 1
+            }
         }
     }
 }
@@ -609,6 +612,9 @@ draw :: proc() {
         k2.draw_text("Pause", {50, 50}, 25, k2.BLACK)
     }
 
+    targets_remaining := fmt.tprintf("Targets: %i", g.live_targets)
+    k2.draw_text(targets_remaining, {10, 4}, 10, k2.WHITE)
+
     time := get_time_elapsed()
     time_str := fmt.tprintf("Time: %.3f", time)
     k2.draw_text(time_str, {100, 4}, 10, k2.WHITE)
@@ -621,10 +627,10 @@ draw :: proc() {
 }
 
 get_time_elapsed :: proc() -> f64 {
-    if g.start_time == g.stop_time {
+    if g.live_targets > 0 {
         return time.duration_seconds(time.since(g.start_time))
     }
-    // stop_time != start_time means level is complete
+
     return time.duration_seconds(time.diff(g.start_time, g.stop_time))
 }
 
