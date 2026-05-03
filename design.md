@@ -27,7 +27,7 @@ top down 2d shooter
 - [x] keep track of score (hits and misses) and display on top bar
 - [x] add timer that stops once all targets are neutralized and display on top bar
 - [x] shows targets remaining on top bar
-- [ ] menu to pause and restart level
+- [x] menu to pause and restart level
 - [ ] add textures to player and targets
 - [ ] add room textures
 - [ ] animate player
@@ -36,7 +36,7 @@ top down 2d shooter
 - [ ] shoot vs no-shoot targets (to train not shooting civillians)
 - [ ] level editor
 - [ ] several shoot house levels
-- [ ] enemies are stationary but shoot in a line when player intersects it
+- [ ] enemies are stationary but shoot after delay if their gun intersects with player gun
 - [ ] enemies track player once they see him
 - [ ] civillian npcs that you cant shoot
 - [ ] several real houses levels

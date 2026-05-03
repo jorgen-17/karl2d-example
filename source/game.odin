@@ -25,17 +25,17 @@ STATUS_BAR_HEIGHT :: 20
 PLAYER_WIDTH: f32 : 8
 PLAYER_HEIGHT: f32 : 16
 START_POS :: Vec2{132, 140}
+SHOOT_DEBOUNCE :: 150
 
 Vec2 :: k2.Vec2
 Vec2i :: [2]int
 
 Player :: struct {
-    pos:       Vec2,
-    dir:       Direction,
-    move_dir:  Vec2,
-    gun_rect:  k2.Rect,
-    shot:      bool,
-    last_shot: time.Time,
+    pos:      Vec2,
+    dir:      Direction,
+    move_dir: Vec2,
+    gun_rect: k2.Rect,
+    shot:     Debounced_Event,
 }
 
 Bullet :: struct {
@@ -50,6 +50,11 @@ Score :: struct {
     misses: int,
 }
 
+Debounced_Event :: struct {
+    triggered:      bool,
+    last_triggered: time.Time,
+}
+
 // Counted in number of tiles
 ROOM_TILE_WIDTH :: 15
 ROOM_TILE_HEIGHT :: 10
@@ -59,8 +64,6 @@ TILE_SIZE :: 16
 
 Room :: struct {
     tiles:         [ROOM_TILE_WIDTH * ROOM_TILE_HEIGHT]Tile_Type,
-    // background_objects: [dynamic]Background_Object,
-    // foreground_objects: [dynamic]Foreground_Object,
     interactables: [dynamic]Interactable,
 }
 
@@ -89,7 +92,6 @@ Interactable_Type :: enum {
     // Ammo,
     // Med_Kit,
     // Door,
-    // The_Object,
 }
 
 Interactable :: struct {
@@ -129,8 +131,7 @@ Game_Memory :: struct {
     game_camera:    k2.Camera,
     ui_camera:      k2.Camera,
     live_targets:   int,
-    start_time:     time.Time,
-    stop_time:      time.Time,
+    elapsed_time:   f32, // time from start to end of level
     score:          Score,
     game_over:      bool,
     run:            bool,
@@ -146,8 +147,7 @@ player_start :: proc() -> Player {
         pos = START_POS,
         dir = .North,
         move_dir = vec2_from_direction[.North],
-        shot = false,
-        last_shot = time.now(),
+        shot = Debounced_Event{triggered = false, last_triggered = time.now()},
     }
 }
 
@@ -161,7 +161,7 @@ create_target :: proc(pos: Vec2) -> Interactable {
 
 // odinfmt: disable
 level_1 :: proc() -> Room {
-    target1 := create_target({70, 34})
+    target1 := create_target({102, 34})
     target2 := create_target({34, 82})
     target3 := create_target({70, 110})
     target4 := create_target({162, 62})
@@ -176,12 +176,12 @@ level_1 :: proc() -> Room {
         tiles = [ROOM_TILE_WIDTH * ROOM_TILE_HEIGHT]Tile_Type {
             .Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,
             .Grass ,.Wall  ,.Wall  ,.Wall  ,.Wall  ,.Wall  ,.Wall  ,.Wall  ,.Wall  ,.Wall  ,.Wall  ,.Wall  ,.Wall  ,.Wall  ,.Grass ,
-            .Grass ,.Wall  ,.Ground,.Ground,.Ground,.Wall  ,.Ground,.Ground,.Ground,.Ground,.Ground,.Ground,.Ground,.Wall  ,.Grass ,
+            .Grass ,.Wall  ,.Ground,.Ground,.Ground,.Ground,.Ground,.Wall  ,.Ground,.Ground,.Ground,.Ground,.Ground,.Wall  ,.Grass ,
+            .Grass ,.Wall  ,.Ground,.Ground,.Ground,.Ground,.Ground,.Wall  ,.Ground,.Wall  ,.Ground,.Ground,.Ground,.Wall  ,.Grass ,
+            .Grass ,.Wall  ,.Wall  ,.Ground,.Wall  ,.Wall  ,.Wall  ,.Wall  ,.Ground,.Wall  ,.Ground,.Ground,.Ground,.Wall  ,.Grass ,
+            .Grass ,.Wall  ,.Ground,.Ground,.Ground,.Ground,.Ground,.Wall  ,.Ground,.Wall  ,.Wall  ,.Ground,.Ground,.Wall  ,.Grass ,
             .Grass ,.Wall  ,.Ground,.Ground,.Ground,.Ground,.Ground,.Ground,.Ground,.Wall  ,.Ground,.Ground,.Ground,.Wall  ,.Grass ,
-            .Grass ,.Wall  ,.Wall  ,.Wall  ,.Wall  ,.Wall  ,.Wall  ,.Ground,.Ground,.Wall  ,.Ground,.Ground,.Ground,.Wall  ,.Grass ,
-            .Grass ,.Wall  ,.Ground,.Ground,.Ground,.Wall  ,.Ground,.Ground,.Ground,.Wall  ,.Wall  ,.Ground,.Ground,.Wall  ,.Grass ,
-            .Grass ,.Wall  ,.Ground,.Ground,.Ground,.Ground,.Ground,.Ground,.Ground,.Wall  ,.Ground,.Ground,.Ground,.Wall  ,.Grass ,
-            .Grass ,.Wall  ,.Ground,.Ground,.Ground,.Wall  ,.Ground,.Ground,.Ground,.Wall  ,.Ground,.Ground,.Ground,.Wall  ,.Grass ,
+            .Grass ,.Wall  ,.Ground,.Ground,.Ground,.Ground,.Ground,.Wall  ,.Ground,.Wall  ,.Ground,.Ground,.Ground,.Wall  ,.Grass ,
             .Grass ,.Wall  ,.Wall  ,.Wall  ,.Wall  ,.Wall  ,.Wall  ,.Wall  ,.Ground,.Wall  ,.Wall  ,.Wall  ,.Wall  ,.Wall  ,.Grass ,
             .Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,
         },
@@ -206,9 +206,7 @@ restart :: proc() {
         hits   = 0,
         misses = 0,
     }
-    start_time := time.now()
-    g.start_time = start_time
-    g.stop_time = start_time
+    g.elapsed_time = 0.0
     g.game_over = false
     g.pause = false
 }
@@ -297,7 +295,7 @@ handle_input :: proc() {
     }
     g.player.move_dir = linalg.normalize0(g.player.move_dir)
 
-    if k2.key_is_held(.Escape) && !g.game_over {
+    if k2.key_went_down(.Escape) && !g.game_over {
         g.pause = !g.pause
     }
 
@@ -306,9 +304,12 @@ handle_input :: proc() {
     }
 
     if (k2.key_went_down(.Space) || k2.mouse_button_is_held(.Left)) &&
-       (time.duration_milliseconds(time.since(g.player.last_shot)) > 150) {
-        g.player.shot = true
-        g.player.last_shot = time.now()
+       (time.duration_milliseconds(time.since(g.player.shot.last_triggered)) >
+               SHOOT_DEBOUNCE) {
+        g.player.shot = Debounced_Event {
+            triggered      = true,
+            last_triggered = time.now(),
+        }
     }
 
     if k2.key_went_down(.F2) {
@@ -494,7 +495,7 @@ update_state :: proc() {
     }
 
     // spawn new bullets if when player shoots
-    if (g.player.shot) {
+    if (g.player.shot.triggered) {
         fmt.println("game.odin::update_state: player shot")
         bullet_dir := calc_bullet_dir(bullet_pos)
         bullet := Bullet {
@@ -504,11 +505,11 @@ update_state :: proc() {
             age      = 0,
         }
         append(&g.bullets, bullet)
-        g.player.shot = false
+        g.player.shot.triggered = false
     }
 
-    if g.live_targets == 0 && g.start_time == g.stop_time {
-        g.stop_time = time.now()
+    if g.live_targets > 0 {
+        g.elapsed_time += frame_time
     }
 }
 
@@ -608,14 +609,33 @@ draw :: proc() {
         k2.draw_text("Press Enter to play again", {4, 30}, 15, k2.BLACK)
     }
 
+
     if g.pause {
-        k2.draw_text("Pause", {50, 50}, 25, k2.BLACK)
+        menu_width: f32 = SCREEN_WIDTH - 110
+        menu_item_width: f32 = menu_width - 20
+        menu_item_height: f32 = 10
+        k2.draw_rect({50, 50, menu_width, SCREEN_HEIGHT - 110}, CLEAR_COLOR)
+        k2.draw_text("Pause", {100, 60}, 10, k2.WHITE)
+        if ui_button(
+            {60, 80, menu_item_width, menu_item_height},
+            "Resume",
+            g.ui_camera,
+        ) {
+            g.pause = false
+        }
+        if ui_button(
+            {60, 100, menu_item_width, menu_item_height},
+            "Restart",
+            g.ui_camera,
+        ) {
+            restart()
+        }
     }
 
     targets_remaining := fmt.tprintf("Targets: %i", g.live_targets)
     k2.draw_text(targets_remaining, {10, 4}, 10, k2.WHITE)
 
-    time := get_time_elapsed()
+    time := g.elapsed_time
     time_str := fmt.tprintf("Time: %.3f", time)
     k2.draw_text(time_str, {100, 4}, 10, k2.WHITE)
 
@@ -626,12 +646,32 @@ draw :: proc() {
     k2.present()
 }
 
-get_time_elapsed :: proc() -> f64 {
-    if g.live_targets > 0 {
-        return time.duration_seconds(time.since(g.start_time))
+ui_button :: proc(r: k2.Rect, text: string, camera: k2.Camera) -> bool {
+    in_rect := k2.point_in_rect(
+        k2.screen_to_world(k2.get_mouse_position(), camera),
+        r,
+    )
+    bg_color := k2.DARK_GRAY
+    border_color := k2.WHITE
+    text_color := k2.WHITE
+    res := false
+
+    if in_rect {
+        bg_color = k2.GRAY
+        text_color = k2.WHITE
+
+        if k2.mouse_button_went_down(.Left) {
+            res = true
+            bg_color = k2.BLACK
+        }
     }
 
-    return time.duration_seconds(time.diff(g.start_time, g.stop_time))
+    k2.draw_rect(r, bg_color)
+    k2.draw_rect_outline(r, 1 / camera.zoom, border_color)
+
+    text_width := k2.measure_text(text, r.h).x
+    k2.draw_text(text, {r.x + r.w / 2 - text_width / 2, r.y}, r.h, k2.WHITE)
+    return res
 }
 
 draw_room :: proc(room: Room) {
