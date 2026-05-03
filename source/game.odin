@@ -137,6 +137,7 @@ Game_Memory :: struct {
     run:            bool,
     pause:          bool,
     debug_draw:     bool,
+    show_controls:  bool,
 }
 
 @(private = "file")
@@ -230,6 +231,7 @@ game_init_state :: proc(k2_state: rawptr, allocator: runtime.Allocator) {
     g.allocator = allocator
     g.run = true
     g.debug_draw = false
+    g.show_controls = true
 
     restart()
 }
@@ -266,7 +268,7 @@ game_update :: proc() -> bool {
         }
     }
 
-    if !g.pause {
+    if !g.pause && !g.game_over && !g.show_controls {
         update_state()
     }
 
@@ -278,6 +280,10 @@ game_update :: proc() -> bool {
 }
 
 handle_input :: proc() {
+    if g.show_controls && k2.key_went_down(.Enter) {
+        g.show_controls = false
+    }
+
     if k2.key_is_held(.W) || k2.gamepad_button_is_held(0, .Left_Face_Up) {
         g.player.move_dir.y -= 1
     }
@@ -299,11 +305,11 @@ handle_input :: proc() {
         g.pause = !g.pause
     }
 
-    if k2.key_is_held(.Q) {
+    if k2.key_went_down(.Q) {
         shutdown()
     }
 
-    if (k2.key_went_down(.Space) || k2.mouse_button_is_held(.Left)) &&
+    if k2.mouse_button_is_held(.Left) &&
        (time.duration_milliseconds(time.since(g.player.shot.last_triggered)) >
                SHOOT_DEBOUNCE) {
         g.player.shot = Debounced_Event {
@@ -511,6 +517,10 @@ update_state :: proc() {
     if g.live_targets > 0 {
         g.elapsed_time += frame_time
     }
+
+    if !g.game_over && g.live_targets <= 0 {
+        g.game_over = true
+    }
 }
 
 check_bullet_collisions :: proc(bullet: ^Bullet) {
@@ -604,11 +614,31 @@ draw :: proc() {
     }
 
     k2.set_camera(g.ui_camera)
-    if g.game_over {
-        k2.draw_text("Game Over!", {4, 4}, 25, k2.RL_RED)
-        k2.draw_text("Press Enter to play again", {4, 30}, 15, k2.BLACK)
+    if g.show_controls {
+        k2.draw_rect(
+            {50, 50, SCREEN_WIDTH - 90, SCREEN_HEIGHT - 90},
+            CLEAR_COLOR,
+        )
+        k2.draw_text("Move: WASD", {60, 60}, 10, k2.WHITE)
+        k2.draw_text("Aim with Mouse, Shoot with LMB", {60, 80}, 10, k2.WHITE)
+        k2.draw_text("Score: (Hits: +1, Misses: -1)", {60, 100}, 10, k2.WHITE)
+        k2.draw_text("Press Enter to start!", {60, 120}, 10, k2.WHITE)
     }
 
+    if g.game_over {
+        menu_width: f32 = SCREEN_WIDTH - 110
+        menu_item_width: f32 = menu_width - 20
+        menu_item_height: f32 = 10
+        k2.draw_rect({50, 50, menu_width, SCREEN_HEIGHT - 130}, CLEAR_COLOR)
+        k2.draw_text("Level Cleared!", {90, 60}, 10, k2.WHITE)
+        if ui_button(
+            {60, 80, menu_item_width, menu_item_height},
+            "Play Again",
+            g.ui_camera,
+        ) {
+            restart()
+        }
+    }
 
     if g.pause {
         menu_width: f32 = SCREEN_WIDTH - 110
@@ -765,6 +795,8 @@ game_destroy_state :: proc() {
     fmt.println("game.odin::game_destroy_state")
     destroy_room(g.room)
     delete(g.bullets)
+    delete(g.all_colliders)
+    delete(g.wall_colliders)
     free(g, g.allocator)
 }
 

@@ -28,6 +28,8 @@ top down 2d shooter
 - [x] add timer that stops once all targets are neutralized and display on top bar
 - [x] shows targets remaining on top bar
 - [x] menu to pause and restart level
+- [x] add gameover menu for when you finish the level that lets you restart
+- [x] add instructions on how to play the game
 - [ ] add textures to player and targets
 - [ ] add room textures
 - [ ] animate player
