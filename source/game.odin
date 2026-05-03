@@ -128,7 +128,7 @@ Game_Memory :: struct {
     font:           k2.Font,
     game_camera:    k2.Camera,
     ui_camera:      k2.Camera,
-    started_at:     time.Time,
+    start_time:     time.Time,
     stop_time:      time.Time,
     score:          Score,
     game_over:      bool,
@@ -197,8 +197,9 @@ restart :: proc() {
         hits   = 0,
         misses = 0,
     }
-    g.started_at = time.now()
-    g.stop_time = time.now()
+    start_time := time.now()
+    g.start_time = start_time
+    g.stop_time = start_time
     g.game_over = false
     g.pause = false
 }
@@ -496,6 +497,19 @@ update_state :: proc() {
         append(&g.bullets, bullet)
         g.player.shot = false
     }
+
+    if g.start_time == g.stop_time {
+        remaining_targets := 0
+        for inter in g.room.interactables {
+            if (inter.type == .Target || inter.type == .Enemy) &&
+               inter.health > 0 {
+                remaining_targets += 1
+            }
+        }
+        if remaining_targets == 0 {
+            g.stop_time = time.now()
+        }
+    }
 }
 
 check_bullet_collisions :: proc(bullet: ^Bullet) {
@@ -556,6 +570,7 @@ draw :: proc() {
 
     draw_room(g.room)
     for interactible in g.room.interactables {
+
         color := interactible.health > 0 ? k2.RED : k2.BLACK
         k2.draw_rect(
             k2.rect_from_pos_size(
@@ -594,11 +609,23 @@ draw :: proc() {
         k2.draw_text("Pause", {50, 50}, 25, k2.BLACK)
     }
 
+    time := get_time_elapsed()
+    time_str := fmt.tprintf("Time: %.3f", time)
+    k2.draw_text(time_str, {100, 4}, 10, k2.WHITE)
+
     score := g.score.hits - g.score.misses
     score_str := fmt.tprintf("Score: %v", score)
     k2.draw_text(score_str, {200, 4}, 10, k2.WHITE)
 
     k2.present()
+}
+
+get_time_elapsed :: proc() -> f64 {
+    if g.start_time == g.stop_time {
+        return time.duration_seconds(time.since(g.start_time))
+    }
+    // stop_time != start_time means level is complete
+    return time.duration_seconds(time.diff(g.start_time, g.stop_time))
 }
 
 draw_room :: proc(room: Room) {

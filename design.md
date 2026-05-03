@@ -24,8 +24,8 @@ top down 2d shooter
 - [x] player collisions: cant walk through walls or live targets/enemies
 - [x] bullet collisions: bullets cant go through walls and take away health from targets/enemies
 - [x] aim gun with mouse pointer, character also faces where the mouse is
-- [x] keep track of score (hits and misses) display on top bar
-- [ ] add timer that stops once all targets are neutralized display on top bar
+- [x] keep track of score (hits and misses) and display on top bar
+- [x] add timer that stops once all targets are neutralized and display on top bar
 - [ ] shows targets remaining on top bar
 - [ ] menu to pause and restart level
 - [ ] add textures to player and targets
