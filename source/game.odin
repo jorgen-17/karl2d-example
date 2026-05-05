@@ -6,6 +6,7 @@ import k2 "../libs/karl2d/"
 
 import "base:runtime"
 import "core:fmt"
+import "core:math"
 import "core:math/linalg"
 import "core:time"
 
@@ -24,8 +25,10 @@ STATUS_BAR_HEIGHT :: 20
 
 PLAYER_WIDTH: f32 : 8
 PLAYER_HEIGHT: f32 : 16
+PLAYER_START_HEALTH: int : 4
 START_POS :: Vec2{132, 140}
 SHOOT_DEBOUNCE :: 150
+AI_SHOT_DELAY :: 250 // time between ai spotting player and taking the first shot
 
 Vec2 :: k2.Vec2
 Vec2i :: [2]int
@@ -36,12 +39,13 @@ Player :: struct {
     move_dir: Vec2,
     gun_rect: k2.Rect,
     shot:     Debounced_Event,
+    health:   int,
 }
 
 Bullet :: struct {
     pos:      Vec2,
     dir:      Vec2,
-    collided: bool, // has collided with wall or interactible
+    collided: bool, // has collided with wall or target or player
     age:      int,
 }
 
@@ -63,8 +67,8 @@ ROOM_TILE_HEIGHT :: 10
 TILE_SIZE :: 16
 
 Room :: struct {
-    tiles:         [ROOM_TILE_WIDTH * ROOM_TILE_HEIGHT]Tile_Type,
-    interactables: [dynamic]Interactable,
+    tiles:   [ROOM_TILE_WIDTH * ROOM_TILE_HEIGHT]Tile_Type,
+    targets: [dynamic]Target,
 }
 
 
@@ -86,24 +90,26 @@ tile_color_lookup := [Tile_Type]k2.Color {
     .Wall   = k2.WHITE,
 }
 
-Interactable_Type :: enum {
-    Target,
+Target_Type :: enum {
+    Paper,
     Enemy,
-    // Ammo,
-    // Med_Kit,
-    // Door,
 }
 
-Interactable :: struct {
-    type:     Interactable_Type,
-    pos:      Vec2,
-    collider: k2.Rect,
-    health:   int,
+Target :: struct {
+    type:        Target_Type,
+    id:          int,
+    pos:         Vec2,
+    dir:         Direction,
+    collider:    k2.Rect,
+    gun_rect:    k2.Rect,
+    shot:        Debounced_Event,
+    seen_player: Debounced_Event,
+    health:      int,
 }
 
-interactible_start_health_lookup := [Interactable_Type]int {
-    .Target = 2,
-    .Enemy  = 4,
+target_start_health_lookup := [Target_Type]int {
+    .Paper = 2,
+    .Enemy = 4,
 }
 
 Direction :: enum {
@@ -134,6 +140,7 @@ Game_Memory :: struct {
     elapsed_time:   f32, // time from start to end of level
     score:          Score,
     game_over:      bool,
+    practice_round: bool,
     run:            bool,
     pause:          bool,
     debug_draw:     bool,
@@ -149,30 +156,39 @@ player_start :: proc() -> Player {
         dir = .North,
         move_dir = vec2_from_direction[.North],
         shot = Debounced_Event{triggered = false, last_triggered = time.now()},
+        health = PLAYER_START_HEALTH,
     }
 }
 
-create_target :: proc(pos: Vec2) -> Interactable {
-    return Interactable {
-        type = .Target,
+create_target :: proc(
+    id: int,
+    pos: Vec2,
+    dir: Direction,
+    type: Target_Type,
+) -> Target {
+    return Target {
+        type = type,
+        id = id,
         pos = pos,
-        health = interactible_start_health_lookup[.Target],
+        dir = dir,
+        health = target_start_health_lookup[type],
     }
 }
 
 // odinfmt: disable
-level_1 :: proc() -> Room {
-    target1 := create_target({102, 34})
-    target2 := create_target({34, 82})
-    target3 := create_target({70, 110})
-    target4 := create_target({162, 62})
-    target5 := create_target({162, 98})
-    interactibles : [dynamic]Interactable
-    append(&interactibles, target1)
-    append(&interactibles, target2)
-    append(&interactibles, target3)
-    append(&interactibles, target4)
-    append(&interactibles, target5)
+level_1 :: proc(practice_round: bool) -> Room {
+    type : Target_Type = practice_round ? .Paper : .Enemy
+    target1 := create_target(1, {102, 34}, .West, type)
+    target2 := create_target(2, {34, 82}, .East, type)
+    target3 := create_target(3, {70, 110}, .East, type)
+    target4 := create_target(4, {162, 62}, .North, type)
+    target5 := create_target(5, {162, 98}, .East, type)
+    targets : [dynamic]Target
+    append(&targets, target1)
+    append(&targets, target2)
+    append(&targets, target3)
+    append(&targets, target4)
+    append(&targets, target5)
     return Room {
         tiles = [ROOM_TILE_WIDTH * ROOM_TILE_HEIGHT]Tile_Type {
             .Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,
@@ -186,19 +202,30 @@ level_1 :: proc() -> Room {
             .Grass ,.Wall  ,.Wall  ,.Wall  ,.Wall  ,.Wall  ,.Wall  ,.Wall  ,.Ground,.Wall  ,.Wall  ,.Wall  ,.Wall  ,.Wall  ,.Grass ,
             .Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,.Grass ,
         },
-        interactables = interactibles
+        targets = targets
     }
 }
 // odinfmt: enable
 
+clean_up :: proc() {
+    if len(g.room.targets) > 0 {
+        destroy_room(g.room)
+    }
+
+    if len(g.bullets) > 0 {
+        delete(g.bullets)
+    }
+}
+
 restart :: proc() {
     fmt.println("game.odin::restart")
+    clean_up()
     g.player = player_start()
-    g.room = level_1()
+    g.room = level_1(g.practice_round)
     live_targets := 0
-    for inter in g.room.interactables {
-        if (inter.type == .Target || inter.type == .Enemy) &&
-           inter.health > 0 {
+    for target in g.room.targets {
+        if (target.type == .Paper || target.type == .Enemy) &&
+           target.health > 0 {
             live_targets += 1
         }
     }
@@ -229,6 +256,7 @@ game_init_state :: proc(k2_state: rawptr, allocator: runtime.Allocator) {
     fmt.println("game.odin::init_game")
     g = new(Game_Memory, allocator)
     g.allocator = allocator
+    g.practice_round = true
     g.run = true
     g.debug_draw = false
     g.show_controls = true
@@ -262,12 +290,6 @@ game_update :: proc() -> bool {
         },
     )
 
-    if g.game_over {
-        if k2.key_went_down(.Enter) {
-            restart()
-        }
-    }
-
     if !g.pause && !g.game_over && !g.show_controls {
         update_state()
     }
@@ -276,7 +298,7 @@ game_update :: proc() -> bool {
 
     free_all(context.temp_allocator)
 
-    return true
+    return g.run
 }
 
 handle_input :: proc() {
@@ -306,12 +328,11 @@ handle_input :: proc() {
     }
 
     if k2.key_went_down(.Q) {
-        shutdown()
+        g.run = false
     }
 
     if k2.mouse_button_is_held(.Left) &&
-       (time.duration_milliseconds(time.since(g.player.shot.last_triggered)) >
-               SHOOT_DEBOUNCE) {
+       event_has_debounced(g.player.shot.last_triggered, SHOOT_DEBOUNCE) {
         g.player.shot = Debounced_Event {
             triggered      = true,
             last_triggered = time.now(),
@@ -321,6 +342,21 @@ handle_input :: proc() {
     if k2.key_went_down(.F2) {
         g.debug_draw = !g.debug_draw
     }
+
+    if k2.key_went_down(.F3) {
+        g.practice_round = !g.practice_round
+        restart()
+    }
+}
+
+event_has_debounced :: proc(
+    last_triggered: time.Time,
+    debounce_time: f64,
+) -> bool {
+    return(
+        time.duration_milliseconds(time.since(last_triggered)) >
+        debounce_time \
+    )
 }
 
 update_state :: proc() {
@@ -391,13 +427,13 @@ update_state :: proc() {
         append(&all_colliders, tile_rect)
         append(&wall_colliders, tile_rect)
     }
-    for &inter in g.room.interactables {
-        r := k2.rect_from_pos_size(inter.pos, {PLAYER_WIDTH, PLAYER_HEIGHT})
-        inter.collider = r
+    for &target in g.room.targets {
+        r := k2.rect_from_pos_size(target.pos, {PLAYER_WIDTH, PLAYER_HEIGHT})
+        target.collider = r
 
         // target || enemy is down so player can walk over them
-        if (inter.type == .Target || inter.type == .Enemy) &&
-           inter.health > 0 {
+        if (target.type == .Paper || target.type == .Enemy) &&
+           target.health > 0 {
             append(&all_colliders, r)
         }
     }
@@ -441,44 +477,10 @@ update_state :: proc() {
     // )
     g.player.move_dir = Vec2{0, 0}
 
-    gun_rect: k2.Rect
-    gun_length: f32 = 8
-    gun_thickness: f32 = 2
-    bullet_pos: Vec2
-    switch g.player.dir {
-    case .North:
-        gun_rect = k2.Rect {
-            w = gun_thickness,
-            h = gun_length,
-            x = g.player.pos.x + PLAYER_WIDTH - gun_thickness,
-            y = g.player.pos.y - gun_length,
-        }
-        bullet_pos = {gun_rect.x, gun_rect.y}
-    case .South:
-        gun_rect = k2.Rect {
-            w = gun_thickness,
-            h = gun_length,
-            x = g.player.pos.x,
-            y = g.player.pos.y + gun_length,
-        }
-        bullet_pos = {gun_rect.x, gun_rect.y + gun_length}
-    case .East:
-        gun_rect = k2.Rect {
-            w = gun_length,
-            h = gun_thickness,
-            x = g.player.pos.x + 2,
-            y = g.player.pos.y + (PLAYER_HEIGHT / 2),
-        }
-        bullet_pos = {gun_rect.x + gun_length, gun_rect.y}
-    case .West:
-        gun_rect = k2.Rect {
-            w = gun_length,
-            h = gun_thickness,
-            x = g.player.pos.x - 2,
-            y = g.player.pos.y + (PLAYER_HEIGHT / 2),
-        }
-        bullet_pos = {gun_rect.x, gun_rect.y}
-    }
+    gun_rect, bullet_pos := generate_gun_rect_bullet_pos(
+        g.player.dir,
+        g.player.pos,
+    )
     g.player.gun_rect = gun_rect
 
     // update bullet positions and age
@@ -502,7 +504,7 @@ update_state :: proc() {
 
     // spawn new bullets if when player shoots
     if (g.player.shot.triggered) {
-        fmt.println("game.odin::update_state: player shot")
+        // fmt.println("game.odin::update_state: player shot")
         bullet_dir := calc_bullet_dir(bullet_pos)
         bullet := Bullet {
             dir      = bullet_dir,
@@ -514,6 +516,80 @@ update_state :: proc() {
         g.player.shot.triggered = false
     }
 
+    for &target in g.room.targets {
+        if !g.practice_round {
+            // add gun rect to target
+            gun_rect, bullet_pos = generate_gun_rect_bullet_pos(
+                target.dir,
+                target.pos,
+            )
+            target.gun_rect = gun_rect
+
+            if target.health > 0 {     // if target dead, dont shoot
+                pc := calc_player_collider(g.player.pos)
+                pc_center: Vec2 = {pc.x + pc.w / 2, pc.y + pc.h}
+                point_0 := bullet_pos
+                point_1 := pc_center
+                _, pc_distance := line_k2rect_intersection(
+                    point_0,
+                    point_1,
+                    pc,
+                )
+                blocked := false // line of sight from bullet_pos to pc_center blocked by a collider
+                for collider in g.all_colliders {
+                    hit, distance := line_k2rect_intersection(
+                        point_0,
+                        point_1,
+                        collider,
+                    )
+                    if hit && distance <= pc_distance {
+                        blocked = true
+                    }
+                }
+                if !blocked {
+                    if !target.seen_player.triggered {
+                        target.seen_player.triggered = true
+                        target.seen_player.last_triggered = time.now()
+                        fmt.printfln("target%i has seen player", target.id)
+                    }
+
+                    if target.seen_player.triggered &&
+                       !target.shot.triggered &&
+                       event_has_debounced(
+                           target.seen_player.last_triggered,
+                           AI_SHOT_DELAY,
+                       ) {
+                        fmt.printfln(
+                            "target%i seen player after delay",
+                            target.id,
+                        )
+                        target.shot.triggered = true
+                    }
+
+                    if target.shot.triggered &&
+                       event_has_debounced(
+                           target.shot.last_triggered,
+                           SHOOT_DEBOUNCE,
+                       ) {
+                        bullet_dir := linalg.normalize0(pc_center - bullet_pos)
+                        bullet := Bullet {
+                            dir      = bullet_dir,
+                            pos      = bullet_pos,
+                            collided = false,
+                            age      = 0,
+                        }
+                        append(&g.bullets, bullet)
+                        target.shot.last_triggered = time.now()
+                    }
+
+                } else {
+                    target.seen_player.triggered = false
+                    target.shot.triggered = false
+                }
+            }
+        }
+    }
+
     if g.live_targets > 0 {
         g.elapsed_time += frame_time
     }
@@ -523,12 +599,106 @@ update_state :: proc() {
     }
 }
 
+line_k2rect_intersection :: proc(p0, p1: Vec2, rect: k2.Rect) -> (bool, f32) {
+    rect_min: Vec2 = {rect.x, rect.y}
+    rect_max: Vec2 = {rect.x + rect.w, rect.y + rect.h}
+
+    d := p1 - p0
+    t_min: f32 = 0.0
+    t_max: f32 = 1.0
+
+    // Check each axis (X and Y)
+    for i in 0 ..< 2 {
+        if d[i] == 0 {
+            // Line is parallel to this axis
+            if p0[i] < rect_min[i] || p0[i] > rect_max[i] do return false, 0
+        } else {
+            // Find intersection times with the two planes of this axis
+            inv_d := 1.0 / d[i]
+            t1 := (rect_min[i] - p0[i]) * inv_d
+            t2 := (rect_max[i] - p0[i]) * inv_d
+
+            // Ensure t1 is the entry point and t2 is the exit point
+            entry := math.min(t1, t2)
+            exit := math.max(t1, t2)
+
+            t_min = math.max(t_min, entry)
+            t_max = math.min(t_max, exit)
+
+            // If entry occurs after exit, there is no intersection
+            if t_min > t_max do return false, 0
+        }
+    }
+
+    // t_min is the fractional distance along the segment [0, 1]
+    // Actual distance is t_min * length of the segment
+    actual_dist := t_min * linalg.length(d)
+    return true, actual_dist
+}
+
+generate_gun_rect_bullet_pos :: proc(
+    player_dir: Direction,
+    player_pos: Vec2,
+) -> (
+    k2.Rect,
+    Vec2,
+) {
+    gun_rect: k2.Rect
+    gun_length: f32 = 8
+    gun_thickness: f32 = 2
+    bullet_pos: Vec2
+    switch player_dir {
+    case .North:
+        gun_rect = k2.Rect {
+            w = gun_thickness,
+            h = gun_length,
+            x = player_pos.x + PLAYER_WIDTH - gun_thickness,
+            y = player_pos.y - gun_length,
+        }
+        bullet_pos = {gun_rect.x, gun_rect.y}
+    case .South:
+        gun_rect = k2.Rect {
+            w = gun_thickness,
+            h = gun_length,
+            x = player_pos.x,
+            y = player_pos.y + gun_length,
+        }
+        bullet_pos = {gun_rect.x, gun_rect.y + gun_length}
+    case .East:
+        gun_rect = k2.Rect {
+            w = gun_length,
+            h = gun_thickness,
+            x = player_pos.x + 2,
+            y = player_pos.y + (PLAYER_HEIGHT / 2),
+        }
+        bullet_pos = {gun_rect.x + gun_length, gun_rect.y}
+    case .West:
+        gun_rect = k2.Rect {
+            w = gun_length,
+            h = gun_thickness,
+            x = player_pos.x - 2,
+            y = player_pos.y + (PLAYER_HEIGHT / 2),
+        }
+        bullet_pos = {gun_rect.x, gun_rect.y}
+    }
+    return gun_rect, bullet_pos
+}
+
 check_bullet_collisions :: proc(bullet: ^Bullet) {
     bullet_rect := k2.Rect {
         x = bullet.pos.x - 0.5,
         y = bullet.pos.y - 0.5,
         w = 1,
         h = 1,
+    }
+    pc := calc_player_collider(g.player.pos)
+    _, pc_overlapping := k2.rect_overlap(bullet_rect, pc)
+    if (pc_overlapping) {
+        bullet.collided = true
+        g.player.health -= 1
+        if g.player.health <= 0 {
+            g.game_over = true
+        }
     }
 
     for c in g.wall_colliders {
@@ -540,14 +710,14 @@ check_bullet_collisions :: proc(bullet: ^Bullet) {
         }
     }
 
-    for &inter in g.room.interactables {
-        _, overlapping := k2.rect_overlap(bullet_rect, inter.collider)
+    for &target in g.room.targets {
+        _, overlapping := k2.rect_overlap(bullet_rect, target.collider)
 
-        if (overlapping && inter.health > 0) {
+        if (overlapping && target.health > 0) {
             bullet.collided = true
-            inter.health -= 1
+            target.health -= 1
             g.score.hits += 1
-            if inter.health == 0 {
+            if target.health <= 0 {
                 g.live_targets -= 1
             }
         }
@@ -583,16 +753,13 @@ draw :: proc() {
     k2.draw_rect({0, 0, SCREEN_WIDTH, SCREEN_HEIGHT}, GRASS_COLOR)
 
     draw_room(g.room)
-    for interactible in g.room.interactables {
-
-        color := interactible.health > 0 ? k2.RED : k2.BLACK
+    for target in g.room.targets {
+        color := target.health > 0 ? k2.RED : k2.BLACK
         k2.draw_rect(
-            k2.rect_from_pos_size(
-                interactible.pos,
-                {PLAYER_WIDTH, PLAYER_HEIGHT},
-            ),
+            k2.rect_from_pos_size(target.pos, {PLAYER_WIDTH, PLAYER_HEIGHT}),
             color,
         )
+        k2.draw_rect(target.gun_rect, k2.DARK_GRAY)
     }
 
     player_rect := k2.rect_from_pos_size(
@@ -630,7 +797,8 @@ draw :: proc() {
         menu_item_width: f32 = menu_width - 20
         menu_item_height: f32 = 10
         k2.draw_rect({50, 50, menu_width, SCREEN_HEIGHT - 130}, CLEAR_COLOR)
-        k2.draw_text("Level Cleared!", {90, 60}, 10, k2.WHITE)
+        menu_title := g.player.health > 0 ? "Level Cleared!" : "You Died!"
+        k2.draw_text(menu_title, {90, 60}, 10, k2.WHITE)
         if ui_button(
             {60, 80, menu_item_width, menu_item_height},
             "Play Again",
@@ -644,8 +812,8 @@ draw :: proc() {
         menu_width: f32 = SCREEN_WIDTH - 110
         menu_item_width: f32 = menu_width - 20
         menu_item_height: f32 = 10
-        k2.draw_rect({50, 50, menu_width, SCREEN_HEIGHT - 110}, CLEAR_COLOR)
-        k2.draw_text("Pause", {100, 60}, 10, k2.WHITE)
+        k2.draw_rect({50, 50, menu_width, SCREEN_HEIGHT - 90}, CLEAR_COLOR)
+        k2.draw_text("Menu", {100, 60}, 10, k2.WHITE)
         if ui_button(
             {60, 80, menu_item_width, menu_item_height},
             "Resume",
@@ -660,18 +828,35 @@ draw :: proc() {
         ) {
             restart()
         }
+        game_mode_title := g.practice_round ? "Live Fire" : "Practice Round"
+        if ui_button(
+            {60, 120, menu_item_width, menu_item_height},
+            game_mode_title,
+            g.ui_camera,
+        ) {
+            g.practice_round = !g.practice_round
+            restart()
+        }
+
     }
 
-    targets_remaining := fmt.tprintf("Targets: %i", g.live_targets)
+    target_title := g.practice_round ? "Targets:" : "Enemies:"
+    targets_remaining := fmt.tprintf("%s %i", target_title, g.live_targets)
     k2.draw_text(targets_remaining, {10, 4}, 10, k2.WHITE)
 
     time := g.elapsed_time
     time_str := fmt.tprintf("Time: %.3f", time)
     k2.draw_text(time_str, {100, 4}, 10, k2.WHITE)
 
-    score := g.score.hits - g.score.misses
-    score_str := fmt.tprintf("Score: %v", score)
-    k2.draw_text(score_str, {200, 4}, 10, k2.WHITE)
+    if g.practice_round {
+        score := g.score.hits - g.score.misses
+        score_str := fmt.tprintf("Score: %v", score)
+        k2.draw_text(score_str, {200, 4}, 10, k2.WHITE)
+    } else {
+        health := (f32(g.player.health) / f32(PLAYER_START_HEALTH)) * 100.0
+        health_str := fmt.tprintf("Health: %.0f%%", health)
+        k2.draw_text(health_str, {180, 4}, 10, k2.WHITE)
+    }
 
     k2.present()
 }
@@ -787,7 +972,7 @@ shutdown :: proc() {
 }
 
 destroy_room :: proc(room: Room) {
-    delete(room.interactables)
+    delete(room.targets)
 }
 
 @(export)
@@ -804,16 +989,6 @@ game_destroy_state :: proc() {
 game_shutdown :: proc() {
     fmt.println("game.odin::game_shutdown")
     k2.shutdown()
-}
-
-@(export)
-game_should_run :: proc() -> bool {
-    // fmt.println("game.odin::game_should_run")
-    // when ODIN_OS != .JS {
-    //     return false
-    // }
-
-    return g.run
 }
 
 @(export)
@@ -838,13 +1013,6 @@ game_hot_reloaded :: proc(memory: ^Game_Memory, k2_state: ^k2.State) {
     // Here you can also set your own global variables. A good idea is to make
     // your global variables into pointers that point to something inside `g`.
 }
-
-// i guess only force restart supported only hot reloads if there is a new dll???
-// @(export)
-// game_force_reload :: proc() -> bool {
-//     // fmt.println("game.odin::game_force_reload")
-//     return k2.key_went_down(.F5)
-// }
 
 @(export)
 game_force_restart :: proc() -> bool {

@@ -38,8 +38,11 @@ top down 2d shooter
 - [ ] shoot vs no-shoot targets (to train not shooting civillians)
 - [ ] level editor
 - [ ] several shoot house levels
-- [ ] enemies are stationary but shoot after delay if their gun intersects with player gun
-- [ ] enemies track player once they see him
+- [x] enemies are stationary but shoot after delay if their gun intersects with player center
+- [x] game over after player health goes to 0, menu says "you died"
+- [x] can switch level between practice round and live fire modes
+- [ ] enemies walk simple routes around house
+- [ ] enemies move towards player once they see him
 - [ ] civillian npcs that you cant shoot
 - [ ] several real houses levels
 - [ ] limited ammo capacity, invetory with magazines, each mag keeps track of how many bullets it has
