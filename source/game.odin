@@ -212,8 +212,9 @@ clean_up :: proc() {
         destroy_room(g.room)
     }
 
-    if len(g.bullets) > 0 {
-        delete(g.bullets)
+    for pidx := 0; pidx < len(g.bullets); pidx += 1 {
+        unordered_remove(&g.bullets, pidx)
+        pidx -= 1
     }
 }
 
