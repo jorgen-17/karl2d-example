@@ -25,7 +25,7 @@ odin run .
 
 web build:
 ```bash
-odin run ./libs/karl2d/build_web/ -- .
+odin run ./libs/karl2d/build_web/ -- . -o:size
 ```
 
 to run web build:
